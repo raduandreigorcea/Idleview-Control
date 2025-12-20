@@ -181,7 +181,7 @@ onMounted(() => {
 <template>
   <div class="container">
     <header>
-      <h1><img :src="SettingsIcon" alt="Settings" class="title-icon" />Idleview Settings</h1>
+      <h1><img :src="SettingsIcon" alt="Settings" class="title-icon" />Idleview Control</h1>
       <p class="subtitle">Configure your ambient display</p>
     </header>
 
