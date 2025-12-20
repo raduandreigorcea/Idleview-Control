@@ -6,8 +6,6 @@ import RulerIcon from './assets/ruler-dimension-line.svg'
 import MonitorIcon from './assets/monitor-cog.svg'
 import ImageIcon from './assets/image.svg'
 import SettingsIcon from './assets/settings.svg'
-import SaveIcon from './assets/save.svg'
-import RefreshIcon from './assets/refresh-ccw.svg'
 import ResetIcon from './assets/book-marked.svg'
 
 
@@ -153,19 +151,6 @@ const saveSettings = async () => {
   }
 }
 
-// Refresh photo
-const refreshPhoto = async () => {
-  try {
-    const response = await fetch(`${API_BASE}/api/refresh-photo`, { method: 'POST' })
-    if (!response.ok) throw new Error('Failed to refresh photo')
-    
-    showMessage('🔄 Photo refreshed!', 'success')
-  } catch (error) {
-    console.error('Error refreshing photo:', error)
-    showMessage('❌ Failed to refresh photo', 'error')
-  }
-}
-
 // Reset to defaults
 const resetSettings = async () => {
   try {
@@ -208,7 +193,7 @@ onMounted(() => {
       <p>⚠️ Cannot connect to Idleview app</p>
       <p class="error-details">Make sure the Idleview application is running on this computer.</p>
       <button class="btn btn-primary" @click="loadSettings">
-        <img :src="RefreshIcon" alt="Refresh" class="btn-icon" />Retry Connection
+        Retry Connection
       </button>
     </div>
 
@@ -240,9 +225,6 @@ onMounted(() => {
 
       <!-- Actions -->
       <section class="settings-group actions">
-        <button class="btn btn-secondary" @click="refreshPhoto">
-          <img :src="RefreshIcon" alt="Refresh" class="btn-icon" />Refresh Photo Now
-        </button>
         <button class="btn btn-danger" @click="resetSettings">
           <img :src="ResetIcon" alt="Reset" class="btn-icon" />Reset to Defaults
         </button>
