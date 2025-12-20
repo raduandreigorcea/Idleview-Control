@@ -10,10 +10,11 @@ import SaveIcon from './assets/save.svg'
 import RefreshIcon from './assets/refresh-ccw.svg'
 import ResetIcon from './assets/book-marked.svg'
 
-// API endpoint - change this to match your Idleview app's server
-// In production (served by Idleview app), uses relative URLs
-// In development, uses localhost:3000
-const API_BASE = import.meta.env.VITE_API_URL || (import.meta.env.DEV ? 'http://localhost:3000' : '')
+
+// API base URL - uses relative URLs
+// Vite proxy handles forwarding to localhost:3000 in development
+// In production, served from the same origin
+const API_BASE = ''
 
 const settings = ref({
   tempUnit: 'celsius',
@@ -28,10 +29,19 @@ const settings = ref({
   photoQuality: '85'
 })
 
-const statusMessage = ref('')
-const messageType = ref('success')
+const messages = ref([])
 const isLoading = ref(true)
 const connectionError = ref(false)
+let messageIdCounter = 0
+
+// Helper to show notification
+const showMessage = (text, type = 'success') => {
+  const id = messageIdCounter++
+  messages.value.unshift({ id, text, type })
+  setTimeout(() => {
+    messages.value = messages.value.filter(m => m.id !== id)
+  }, 5000)
+}
 
 // Options for selects
 const tempOptions = [
@@ -74,7 +84,6 @@ const loadSettings = async () => {
   try {
     isLoading.value = true
     connectionError.value = false
-    statusMessage.value = ''
     const response = await fetch(`${API_BASE}/api/settings`)
     if (!response.ok) throw new Error('Failed to fetch settings')
     
@@ -94,11 +103,12 @@ const loadSettings = async () => {
       photoQuality: data.photos?.photo_quality === 'high' ? '85' : 
                      data.photos?.photo_quality === 'low' ? '70' : '100'
     }
+    
+    // Set isLoading to false after settings are applied to prevent auto-save trigger
+    await new Promise(resolve => setTimeout(resolve, 0))
   } catch (error) {
     console.error('Error loading settings:', error)
     connectionError.value = true
-    messageType.value = 'warning'
-    statusMessage.value = '⚠️ Cannot connect to Idleview app. Make sure it is running.'
   } finally {
     isLoading.value = false
   }
@@ -129,21 +139,17 @@ const saveSettings = async () => {
     }
 
     const response = await fetch(`${API_BASE}/api/settings`, {
-      method: 'POST',
+      method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload)
     })
 
     if (!response.ok) throw new Error('Failed to save settings')
     
-    messageType.value = 'success'
-    statusMessage.value = '✅ Settings saved successfully!'
-    setTimeout(() => statusMessage.value = '', 5000)
+    showMessage('✅ Settings saved successfully!', 'success')
   } catch (error) {
     console.error('Error saving settings:', error)
-    messageType.value = 'error'
-    statusMessage.value = '❌ Failed to save settings'
-    setTimeout(() => statusMessage.value = '', 5000)
+    showMessage('❌ Failed to save settings', 'error')
   }
 }
 
@@ -153,14 +159,10 @@ const refreshPhoto = async () => {
     const response = await fetch(`${API_BASE}/api/refresh-photo`, { method: 'POST' })
     if (!response.ok) throw new Error('Failed to refresh photo')
     
-    messageType.value = 'success'
-    statusMessage.value = '🔄 Photo refreshed!'
-    setTimeout(() => statusMessage.value = '', 5000)
+    showMessage('🔄 Photo refreshed!', 'success')
   } catch (error) {
     console.error('Error refreshing photo:', error)
-    messageType.value = 'error'
-    statusMessage.value = '❌ Failed to refresh photo'
-    setTimeout(() => statusMessage.value = '', 5000)
+    showMessage('❌ Failed to refresh photo', 'error')
   }
 }
 
@@ -171,14 +173,10 @@ const resetSettings = async () => {
     if (!response.ok) throw new Error('Failed to reset settings')
     
     await loadSettings() // Reload from server
-    messageType.value = 'success'
-    statusMessage.value = '↺ Settings reset to defaults'
-    setTimeout(() => statusMessage.value = '', 5000)
+    showMessage('🔄️ Settings reset to defaults', 'success')
   } catch (error) {
     console.error('Error resetting settings:', error)
-    messageType.value = 'error'
-    statusMessage.value = '❌ Failed to reset settings'
-    setTimeout(() => statusMessage.value = '', 5000)
+    showMessage('❌ Failed to reset settings', 'error')
   }
 }
 
@@ -250,7 +248,11 @@ onMounted(() => {
         </button>
       </section>
 
-      <div v-if="statusMessage" :class="['status-message', messageType]">{{ statusMessage }}</div>
+      <div class="messages-container">
+        <div v-for="msg in messages" :key="msg.id" :class="['status-message', msg.type]">
+          {{ msg.text }}
+        </div>
+      </div>
     </main>
 
     <footer>
