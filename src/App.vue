@@ -19,12 +19,12 @@ const settings = ref({
   timeFormat: '24h',
   dateFormat: 'dmy',
   windUnit: 'kmh',
-  showHumidityWind: false,
-  showPrecipitation: false,
-  showSunriseSunset: false,
+  showHumidityWind: true,
+  showPrecipitation: true,
+  showSunriseSunset: true,
   showCPU: false,
   photoInterval: '30',
-  photoQuality: '85'
+  photoQuality: '80'
 })
 
 const messages = ref([])
@@ -98,7 +98,7 @@ const loadSettings = async () => {
       showSunriseSunset: data.display?.show_sunrise_sunset ?? false,
       showCPU: data.display?.show_cpu_temp ?? false,
       photoInterval: String(data.photos?.refresh_interval || 30),
-      photoQuality: String(data.photos?.photo_quality || 85)
+      photoQuality: String(data.photos?.photo_quality || 80)
     }
     
     // Set isLoading to false after settings are applied to prevent auto-save trigger
