@@ -101,6 +101,7 @@ const loadSettings = async () => {
       showPrecipitation: data.display?.show_precipitation_cloudiness ?? false,
       showSunriseSunset: data.display?.show_sunrise_sunset ?? false,
       showCPU: data.display?.show_cpu_temp ?? false,
+      theme: data.display?.theme || 'default',
       photoInterval: String(data.photos?.refresh_interval || 30),
       photoQuality: String(data.photos?.photo_quality || 80)
     }
