@@ -22,8 +22,7 @@ const settings = ref({
   showHumidityWind: true,
   showPrecipitation: true,
   showSunriseSunset: true,
-  showCPU: false,
-  photoInterval: '30',
+  showCPU: false,  theme: 'default',  photoInterval: '30',
   photoQuality: '80'
 })
 
@@ -76,7 +75,12 @@ const qualityOptions = [
   { value: '80', label: 'High (80%)' },
   { value: '100', label: 'Maximum (100%)' }
 ]
-
+const themeOptions = [
+  { value: 'default', label: 'Default - Glass Cards' },
+  { value: 'nest', label: 'Google Nest' },
+  { value: 'apple', label: 'Apple Liquid Glass' },
+  { value: 'clean', label: 'Clean - Text Only' }
+]
 // Load settings from Idleview server
 const loadSettings = async () => {
   try {
@@ -126,7 +130,8 @@ const saveSettings = async () => {
         show_humidity_wind: settings.value.showHumidityWind,
         show_precipitation_cloudiness: settings.value.showPrecipitation,
         show_sunrise_sunset: settings.value.showSunriseSunset,
-        show_cpu_temp: settings.value.showCPU
+        show_cpu_temp: settings.value.showCPU,
+        theme: settings.value.theme
       },
       photos: {
         refresh_interval: parseInt(settings.value.photoInterval),
@@ -208,6 +213,7 @@ onMounted(() => {
       <!-- Display Section -->
       <section class="settings-group">
         <h2><img :src="MonitorIcon" alt="Display" class="section-icon" />Display</h2>
+        <SelectInput label="Theme" v-model="settings.theme" :options="themeOptions" />
         <ToggleSwitch label="Show Humidity and Wind" v-model="settings.showHumidityWind" />
         <ToggleSwitch label="Show Precipitation and Cloudiness" v-model="settings.showPrecipitation" />
         <ToggleSwitch label="Show Sunrise and Sunset timers" v-model="settings.showSunriseSunset" />
