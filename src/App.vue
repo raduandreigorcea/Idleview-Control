@@ -72,8 +72,8 @@ const intervalOptions = [
 ]
 
 const qualityOptions = [
-  { value: '70', label: 'Low (70%)' },
-  { value: '85', label: 'High (85%)' },
+  { value: '65', label: 'Low (65%)' },
+  { value: '80', label: 'High (80%)' },
   { value: '100', label: 'Maximum (100%)' }
 ]
 
@@ -98,8 +98,7 @@ const loadSettings = async () => {
       showSunriseSunset: data.display?.show_sunrise_sunset ?? false,
       showCPU: data.display?.show_cpu_temp ?? false,
       photoInterval: String(data.photos?.refresh_interval || 30),
-      photoQuality: data.photos?.photo_quality === 'high' ? '85' : 
-                     data.photos?.photo_quality === 'low' ? '70' : '100'
+      photoQuality: String(data.photos?.photo_quality || 85)
     }
     
     // Set isLoading to false after settings are applied to prevent auto-save trigger
@@ -131,8 +130,7 @@ const saveSettings = async () => {
       },
       photos: {
         refresh_interval: parseInt(settings.value.photoInterval),
-        photo_quality: settings.value.photoQuality === '85' ? 'high' : 
-                       settings.value.photoQuality === '70' ? 'low' : 'maximum'
+        photo_quality: parseInt(settings.value.photoQuality)
       }
     }
 
