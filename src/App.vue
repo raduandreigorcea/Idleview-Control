@@ -7,6 +7,7 @@ import MonitorIcon from './assets/monitor-cog.svg'
 import ImageIcon from './assets/image.svg'
 import SettingsIcon from './assets/settings.svg'
 import ResetIcon from './assets/book-marked.svg'
+import BracesIcon from './assets/braces.svg'
 
 
 // API base URL - uses relative URLs
@@ -22,14 +23,30 @@ const settings = ref({
   showHumidityWind: true,
   showPrecipitation: true,
   showSunriseSunset: true,
-  showCPU: false,  theme: 'default',  photoInterval: '30',
+  showCPU: false,  theme: 'default',  cardPosition: 'left',
+  festivePhotos: true,
+  photoInterval: '30',
   photoQuality: '80'
 })
 
 const messages = ref([])
 const isLoading = ref(true)
 const connectionError = ref(false)
+const backgroundPhoto = ref('')
+const photoCredits = ref(null)
 let messageIdCounter = 0
+
+// Track expanded sections
+const expandedSections = ref({
+  units: false,
+  display: false,
+  photos: false,
+  dev: false
+})
+
+const toggleSection = (section) => {
+  expandedSections.value[section] = !expandedSections.value[section]
+}
 
 // Helper to show notification
 const showMessage = (text, type = 'success') => {
@@ -76,10 +93,14 @@ const qualityOptions = [
   { value: '100', label: 'Maximum (100%)' }
 ]
 const themeOptions = [
-  { value: 'default', label: 'Default - Glass Cards' },
-  { value: 'nest', label: 'Google Nest' },
-  { value: 'apple', label: 'Apple Liquid Glass' },
-  { value: 'clean', label: 'Clean - Text Only' }
+  { value: 'default', label: 'Default' },
+  { value: 'light', label: 'Light' },
+  { value: 'minimal', label: 'Minimal' }
+]
+
+const cardPositionOptions = [
+  { value: 'left', label: 'Left' },
+  { value: 'right', label: 'Right' }
 ]
 // Load settings from Idleview server
 const loadSettings = async () => {
@@ -102,6 +123,9 @@ const loadSettings = async () => {
       showSunriseSunset: data.display?.show_sunrise_sunset ?? false,
       showCPU: data.display?.show_cpu_temp ?? false,
       theme: data.display?.theme || 'default',
+      cardPosition: data.display?.card_position || 'left',
+      festivePhotos: data.photos?.enable_festive_queries ?? true,
+      showDebug: data.display?.show_debug ?? false,
       photoInterval: String(data.photos?.refresh_interval || 30),
       photoQuality: String(data.photos?.photo_quality || 80)
     }
@@ -113,6 +137,32 @@ const loadSettings = async () => {
     connectionError.value = true
   } finally {
     isLoading.value = false
+  }
+}
+
+// Load background photo
+const loadBackgroundPhoto = async () => {
+  try {
+    const response = await fetch(`${API_BASE}/api/photo/current`)
+    if (response.ok) {
+      const photoData = await response.json()
+      console.log('Photo data received:', photoData)
+      if (photoData && photoData.url) {
+        backgroundPhoto.value = photoData.url
+        photoCredits.value = {
+          author: photoData.author,
+          authorUrl: photoData.author_url
+        }
+        console.log('Background photo set to:', photoData.url)
+      } else {
+        console.log('No photo URL in response')
+        photoCredits.value = null
+      }
+    } else {
+      console.log('Photo endpoint returned:', response.status)
+    }
+  } catch (error) {
+    console.log('Error loading photo:', error)
   }
 }
 
@@ -132,11 +182,14 @@ const saveSettings = async () => {
         show_precipitation_cloudiness: settings.value.showPrecipitation,
         show_sunrise_sunset: settings.value.showSunriseSunset,
         show_cpu_temp: settings.value.showCPU,
-        theme: settings.value.theme
+        theme: settings.value.theme,
+        card_position: settings.value.cardPosition,
+        show_debug: settings.value.showDebug
       },
       photos: {
         refresh_interval: parseInt(settings.value.photoInterval),
-        photo_quality: parseInt(settings.value.photoQuality)
+        photo_quality: parseInt(settings.value.photoQuality),
+        enable_festive_queries: settings.value.festivePhotos
       }
     }
 
@@ -179,12 +232,22 @@ watch(settings, () => {
 // Load settings on mount
 onMounted(() => {
   loadSettings()
+  loadBackgroundPhoto()
+  
+  // Poll for photo updates every 30 seconds
+  setInterval(() => {
+    loadBackgroundPhoto()
+  }, 30000)
 })
 </script>
 
 <template>
-  <div class="container">
-    <header>
+  <div class="page-wrapper">
+    <div class="background-image" :style="backgroundPhoto ? { backgroundImage: `url(${backgroundPhoto})` } : {}"></div>
+    <div class="background-overlay"></div>
+    <div class="container">
+      <div class="content">
+      <header>
       <h1><img :src="SettingsIcon" alt="Settings" class="title-icon" />Idleview Control</h1>
       <p class="subtitle">Configure your ambient display</p>
     </header>
@@ -204,35 +267,78 @@ onMounted(() => {
     <main v-else>
       <!-- Units Section -->
       <section class="settings-group">
-        <h2><img :src="RulerIcon" alt="Units" class="section-icon" />Units</h2>
+        <h2 @click="toggleSection('units')" class="collapsible-header">
+          <span class="header-left"><img :src="RulerIcon" alt="Units" class="section-icon" />Units</span>
+          <svg class="chevron" :class="{ expanded: expandedSections.units }" width="20" height="20" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <path d="M5 7.5L10 12.5L15 7.5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+        </h2>
+        <div v-show="expandedSections.units" class="section-content">
         <SelectInput label="Temperature Unit" v-model="settings.tempUnit" :options="tempOptions" />
         <SelectInput label="Time Format" v-model="settings.timeFormat" :options="timeOptions" />
         <SelectInput label="Date Format" v-model="settings.dateFormat" :options="dateOptions" />
         <SelectInput label="Wind Speed Unit" v-model="settings.windUnit" :options="windOptions" />
+        </div>
       </section>
 
       <!-- Display Section -->
       <section class="settings-group">
-        <h2><img :src="MonitorIcon" alt="Display" class="section-icon" />Display</h2>
+        <h2 @click="toggleSection('display')" class="collapsible-header">
+          <span class="header-left"><img :src="MonitorIcon" alt="Display" class="section-icon" />Display</span>
+          <svg class="chevron" :class="{ expanded: expandedSections.display }" width="20" height="20" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <path d="M5 7.5L10 12.5L15 7.5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+        </h2>
+        <div v-show="expandedSections.display" class="section-content">
         <SelectInput label="Theme" v-model="settings.theme" :options="themeOptions" />
+        <SelectInput label="Card Position" v-model="settings.cardPosition" :options="cardPositionOptions" />
         <ToggleSwitch label="Show Humidity and Wind" v-model="settings.showHumidityWind" />
         <ToggleSwitch label="Show Precipitation and Cloudiness" v-model="settings.showPrecipitation" />
         <ToggleSwitch label="Show Sunrise and Sunset timers" v-model="settings.showSunriseSunset" />
         <ToggleSwitch label="Show CPU Temperature (Linux systems only)" v-model="settings.showCPU" />
+        </div>
       </section>
 
       <!-- Photo Settings -->
       <section class="settings-group">
-        <h2><img :src="ImageIcon" alt="Photos" class="section-icon" />Photos</h2>
+        <h2 @click="toggleSection('photos')" class="collapsible-header">
+          <span class="header-left"><img :src="ImageIcon" alt="Photos" class="section-icon" />Photos</span>
+          <svg class="chevron" :class="{ expanded: expandedSections.photos }" width="20" height="20" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <path d="M5 7.5L10 12.5L15 7.5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+        </h2>
+        <div v-show="expandedSections.photos" class="section-content">
+        <ToggleSwitch label="Enable Festive Photos (Christmas, New Year, Easter, etc.)" v-model="settings.festivePhotos" />
         <SelectInput label="Photo Refresh Interval" v-model="settings.photoInterval" :options="intervalOptions" />
         <SelectInput label="Photo Quality" v-model="settings.photoQuality" :options="qualityOptions" />
+        </div>
       </section>
 
-      <!-- Actions -->
-      <section class="settings-group actions">
-        <button class="btn btn-danger" @click="resetSettings">
-          <img :src="ResetIcon" alt="Reset" class="btn-icon" />Reset to Defaults
-        </button>
+      <!-- Dev Section -->
+      <section class="settings-group">
+        <h2 @click="toggleSection('dev')" class="collapsible-header">
+          <span class="header-left"><img :src="BracesIcon" alt="Dev" class="section-icon" />Developer</span>
+          <svg class="chevron" :class="{ expanded: expandedSections.dev }" width="20" height="20" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <path d="M5 7.5L10 12.5L15 7.5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+        </h2>
+        <div v-show="expandedSections.dev" class="section-content">
+          <ToggleSwitch label="Show Debug Panel" v-model="settings.showDebug" />
+          
+          <div class="dev-actions">
+            <button class="btn btn-danger" @click="resetSettings">
+              <img :src="ResetIcon" alt="Reset" class="btn-icon" />Reset to Defaults
+            </button>
+          </div>
+          
+          <div v-if="photoCredits" class="photo-credits">
+            <h3>Current Photo</h3>
+            <p>Photo by <a :href="photoCredits.authorUrl" target="_blank" rel="noopener">{{ photoCredits.author }}</a></p>
+          </div>
+          <div v-else class="photo-credits">
+            <p class="no-photo">No photo loaded yet</p>
+          </div>
+        </div>
       </section>
 
       <div class="messages-container">
@@ -245,5 +351,151 @@ onMounted(() => {
     <footer>
       <p>Idleview Control Panel · Connect from any device on your network</p>
     </footer>
+    </div>
+    </div>
   </div>
 </template>
+
+<style scoped>
+.page-wrapper {
+  position: relative;
+  min-height: 100vh;
+}
+
+.background-image {
+  position: fixed;
+  top: -10%;
+  left: -10%;
+  right: -10%;
+  bottom: -10%;
+  background-size: cover;
+  background-position: center;
+  filter: blur(10px);
+  z-index: -2;
+}
+
+.background-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.3);
+  z-index: -1;
+}
+
+.container {
+  position: relative;
+  min-height: 100vh;
+}
+
+.content {
+  position: relative;
+  z-index: 1;
+}
+
+header {
+  background: white;
+  border-radius: 12px;
+  padding: 1.5rem;
+  margin-bottom: 1.5rem;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+  text-align: center;
+}
+
+header h1 {
+  margin-bottom: 0.5rem;
+}
+
+header .subtitle {
+  margin: 0;
+}
+
+.collapsible-header {
+  cursor: pointer;
+  user-select: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  transition: color 0.2s;
+}
+
+.collapsible-header .header-left {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.collapsible-header:hover {
+  color: #1976D2;
+}
+
+.chevron {
+  transition: transform 0.3s;
+  flex-shrink: 0;
+}
+
+.chevron.expanded {
+  transform: rotate(180deg);
+}
+
+.section-content {
+  animation: slideDown 0.3s ease-out;
+}
+
+@keyframes slideDown {
+  from {
+    opacity: 0;
+    max-height: 0;
+  }
+  to {
+    opacity: 1;
+    max-height: 1000px;
+  }
+}
+
+.dev-actions {
+  margin: 1.5rem 0;
+  display: flex;
+  justify-content: center;
+}
+
+.dev-actions .btn {
+  min-width: 200px;
+}
+
+.photo-credits {
+  margin-top: 2rem;
+  padding-top: 1.5rem;
+  border-top: 1px solid #e0e0e0;
+  text-align: center;
+}
+
+.photo-credits h3 {
+  font-size: 1rem;
+  font-weight: 600;
+  color: #2c3e50;
+  margin: 0 0 0.5rem 0;
+}
+
+.photo-credits p {
+  margin: 0;
+  color: #7f8c8d;
+  font-size: 0.9rem;
+}
+
+.photo-credits a {
+  color: #1976D2;
+  text-decoration: none;
+  font-weight: 500;
+}
+
+.photo-credits a:hover {
+  text-decoration: underline;
+}
+
+.photo-credits .no-photo {
+  font-style: italic;
+  color: #bdc3c7;
+}
+</style>
