@@ -40,3 +40,5 @@ coverage
 __screenshots__/
 
 .vscode
+
+idleview-control

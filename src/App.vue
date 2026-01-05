@@ -1,5 +1,5 @@
 <script setup>
-import { ref, onMounted, watch } from 'vue'
+import { ref, onMounted, onBeforeUnmount, watch } from 'vue'
 import SelectInput from './components/SelectInput.vue'
 import ToggleSwitch from './components/ToggleSwitch.vue'
 import RulerIcon from './assets/ruler-dimension-line.svg'
@@ -23,7 +23,10 @@ const settings = ref({
   showHumidityWind: true,
   showPrecipitation: true,
   showSunriseSunset: true,
-  showCPU: false,  theme: 'default',  cardPosition: 'left',
+  showCPU: false,
+  showDebug: false,
+  theme: 'default',
+  cardPosition: 'left',
   festivePhotos: true,
   photoInterval: '30',
   photoQuality: '80'
@@ -35,17 +38,35 @@ const connectionError = ref(false)
 const backgroundPhoto = ref('')
 const photoCredits = ref(null)
 let messageIdCounter = 0
+let ignoringSSEUpdate = false
 
-// Track expanded sections
-const expandedSections = ref({
-  units: false,
-  display: false,
-  photos: false,
-  dev: false
-})
+// Track expanded sections - load from localStorage or default to collapsed
+const loadExpandedSections = () => {
+  const stored = localStorage.getItem('expandedSections')
+  if (stored) {
+    try {
+      return JSON.parse(stored)
+    } catch (e) {
+      console.error('Error parsing stored sections:', e)
+    }
+  }
+  return { units: false, display: false, photos: false, dev: false }
+}
+
+const expandedSections = ref(loadExpandedSections())
 
 const toggleSection = (section) => {
   expandedSections.value[section] = !expandedSections.value[section]
+  // Persist to localStorage
+  localStorage.setItem('expandedSections', JSON.stringify(expandedSections.value))
+}
+
+// Keyboard handler for collapsible headers
+const handleHeaderKeydown = (event, section) => {
+  if (event.key === 'Enter' || event.key === ' ') {
+    event.preventDefault()
+    toggleSection(section)
+  }
 }
 
 // Helper to show notification
@@ -143,31 +164,57 @@ const loadSettings = async () => {
 // Load background photo
 const loadBackgroundPhoto = async () => {
   try {
-    const response = await fetch(`${API_BASE}/api/photo/current`)
+    // Add cache-busting to force image refresh
+    const response = await fetch(`${API_BASE}/api/photo/current?t=${Date.now()}`)
     if (response.ok) {
       const photoData = await response.json()
       console.log('Photo data received:', photoData)
       if (photoData && photoData.url) {
-        backgroundPhoto.value = photoData.url
-        photoCredits.value = {
-          author: photoData.author,
-          authorUrl: photoData.author_url
+        // Add cache-busting to image URL
+        const imageUrl = photoData.url.includes('?') 
+          ? `${photoData.url}&t=${Date.now()}`
+          : `${photoData.url}?t=${Date.now()}`
+        
+        // Test if image loads before setting it
+        const img = new Image()
+        img.onload = () => {
+          backgroundPhoto.value = imageUrl
+          photoCredits.value = {
+            author: photoData.author,
+            authorUrl: photoData.author_url
+          }
+          console.log('Background photo set to:', imageUrl)
+          console.log('Photo credits:', photoCredits.value)
         }
-        console.log('Background photo set to:', photoData.url)
+        img.onerror = () => {
+          console.error('Failed to load image:', imageUrl)
+          backgroundPhoto.value = ''
+          photoCredits.value = null
+        }
+        img.src = imageUrl
       } else {
         console.log('No photo URL in response')
+        backgroundPhoto.value = ''
         photoCredits.value = null
       }
     } else {
       console.log('Photo endpoint returned:', response.status)
+      backgroundPhoto.value = ''
+      photoCredits.value = null
     }
   } catch (error) {
-    console.log('Error loading photo:', error)
+    console.error('Error loading photo:', error)
+    backgroundPhoto.value = ''
+    photoCredits.value = null
   }
 }
 
 // Save settings to Idleview server
 const saveSettings = async () => {
+  // Ignore SSE settings-updated events for a short time to prevent reload loop
+  ignoringSSEUpdate = true
+  setTimeout(() => { ignoringSSEUpdate = false }, 1000)
+  
   try {
     // Map UI settings to server format
     const payload = {
@@ -210,6 +257,10 @@ const saveSettings = async () => {
 
 // Reset to defaults
 const resetSettings = async () => {
+  if (!confirm('Reset all settings to defaults? This cannot be undone.')) {
+    return
+  }
+  
   try {
     const response = await fetch(`${API_BASE}/api/settings/reset`, { method: 'POST' })
     if (!response.ok) throw new Error('Failed to reset settings')
@@ -229,15 +280,68 @@ watch(settings, () => {
   }
 }, { deep: true })
 
+// SSE connection reference for cleanup
+let sseConnection = null
+
+// Setup Server-Sent Events for real-time updates
+const setupSSE = () => {
+  const eventSource = new EventSource(`${API_BASE}/api/events`)
+  sseConnection = eventSource
+  
+  eventSource.onmessage = (event) => {
+    try {
+      const data = JSON.parse(event.data)
+      console.log('SSE event received:', data)
+      
+      if (data.type === 'photo-updated') {
+        console.log('Photo updated, reloading...')
+        loadBackgroundPhoto()
+      } else if (data.type === 'settings-updated') {
+        if (ignoringSSEUpdate) {
+          console.log('Settings updated by us, ignoring SSE event')
+          return
+        }
+        console.log('Settings updated externally, reloading...')
+        loadSettings()
+      }
+    } catch (error) {
+      console.error('Error parsing SSE event:', error)
+    }
+  }
+  
+  eventSource.onopen = () => {
+    console.log('SSE connection established')
+  }
+  
+  eventSource.onerror = (error) => {
+    console.error('SSE connection error:', error)
+    eventSource.close()
+    // Retry connection after 5 seconds
+    setTimeout(() => {
+      console.log('Reconnecting to SSE...')
+      setupSSE()
+    }, 5000)
+  }
+  
+  return eventSource
+}
+
 // Load settings on mount
 onMounted(() => {
   loadSettings()
   loadBackgroundPhoto()
   
-  // Poll for photo updates every 30 seconds
-  setInterval(() => {
-    loadBackgroundPhoto()
-  }, 30000)
+  // Setup real-time updates via SSE
+  setupSSE()
+})
+
+// Cleanup SSE connection on unmount
+onBeforeUnmount(() => {
+  if (sseConnection) {
+    console.log('Closing SSE connection')
+    sseConnection.close()
+    sseConnection = null
+  }
 })
 </script>
 
@@ -267,7 +371,7 @@ onMounted(() => {
     <main v-else>
       <!-- Units Section -->
       <section class="settings-group">
-        <h2 @click="toggleSection('units')" class="collapsible-header">
+        <h2 @click="toggleSection('units')" @keydown="handleHeaderKeydown($event, 'units')" tabindex="0" class="collapsible-header">
           <span class="header-left"><img :src="RulerIcon" alt="Units" class="section-icon" />Units</span>
           <svg class="chevron" :class="{ expanded: expandedSections.units }" width="20" height="20" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
             <path d="M5 7.5L10 12.5L15 7.5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
@@ -283,7 +387,7 @@ onMounted(() => {
 
       <!-- Display Section -->
       <section class="settings-group">
-        <h2 @click="toggleSection('display')" class="collapsible-header">
+        <h2 @click="toggleSection('display')" @keydown="handleHeaderKeydown($event, 'display')" tabindex="0" class="collapsible-header">
           <span class="header-left"><img :src="MonitorIcon" alt="Display" class="section-icon" />Display</span>
           <svg class="chevron" :class="{ expanded: expandedSections.display }" width="20" height="20" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
             <path d="M5 7.5L10 12.5L15 7.5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
@@ -316,7 +420,7 @@ onMounted(() => {
 
       <!-- Dev Section -->
       <section class="settings-group">
-        <h2 @click="toggleSection('dev')" class="collapsible-header">
+        <h2 @click="toggleSection('dev')" @keydown="handleHeaderKeydown($event, 'dev')" tabindex="0" class="collapsible-header">
           <span class="header-left"><img :src="BracesIcon" alt="Dev" class="section-icon" />Developer</span>
           <svg class="chevron" :class="{ expanded: expandedSections.dev }" width="20" height="20" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
             <path d="M5 7.5L10 12.5L15 7.5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
