@@ -115,8 +115,8 @@ const qualityOptions = [
 ]
 const themeOptions = [
   { value: 'default', label: 'Default' },
-  { value: 'light', label: 'Light' },
-  { value: 'minimal', label: 'Minimal' }
+  { value: 'geometric', label: 'Geometric' },
+  { value: 'sidebar', label: 'Sidebar' }
 ]
 
 const cardPositionOptions = [
@@ -130,9 +130,9 @@ const loadSettings = async () => {
     connectionError.value = false
     const response = await fetch(`${API_BASE}/api/settings`)
     if (!response.ok) throw new Error('Failed to fetch settings')
-    
+
     const data = await response.json()
-    
+
     // Map server settings to UI format
     settings.value = {
       tempUnit: data.units?.temperature_unit || 'celsius',
@@ -150,7 +150,7 @@ const loadSettings = async () => {
       photoInterval: String(data.photos?.refresh_interval || 30),
       photoQuality: String(data.photos?.photo_quality || 80)
     }
-    
+
     // Set isLoading to false after settings are applied to prevent auto-save trigger
     await new Promise(resolve => setTimeout(resolve, 0))
   } catch (error) {
@@ -171,10 +171,10 @@ const loadBackgroundPhoto = async () => {
       console.log('Photo data received:', photoData)
       if (photoData && photoData.url) {
         // Add cache-busting to image URL
-        const imageUrl = photoData.url.includes('?') 
+        const imageUrl = photoData.url.includes('?')
           ? `${photoData.url}&t=${Date.now()}`
           : `${photoData.url}?t=${Date.now()}`
-        
+
         // Test if image loads before setting it
         const img = new Image()
         img.onload = () => {
@@ -214,7 +214,7 @@ const saveSettings = async () => {
   // Ignore SSE settings-updated events for a short time to prevent reload loop
   ignoringSSEUpdate = true
   setTimeout(() => { ignoringSSEUpdate = false }, 1000)
-  
+
   try {
     // Map UI settings to server format
     const payload = {
@@ -247,7 +247,7 @@ const saveSettings = async () => {
     })
 
     if (!response.ok) throw new Error('Failed to save settings')
-    
+
     showMessage('✅ Settings saved successfully!', 'success')
   } catch (error) {
     console.error('Error saving settings:', error)
@@ -260,11 +260,11 @@ const resetSettings = async () => {
   if (!confirm('Reset all settings to defaults? This cannot be undone.')) {
     return
   }
-  
+
   try {
     const response = await fetch(`${API_BASE}/api/settings/reset`, { method: 'POST' })
     if (!response.ok) throw new Error('Failed to reset settings')
-    
+
     await loadSettings() // Reload from server
     showMessage('🔄️ Settings reset to defaults', 'success')
   } catch (error) {
@@ -287,12 +287,12 @@ let sseConnection = null
 const setupSSE = () => {
   const eventSource = new EventSource(`${API_BASE}/api/events`)
   sseConnection = eventSource
-  
+
   eventSource.onmessage = (event) => {
     try {
       const data = JSON.parse(event.data)
       console.log('SSE event received:', data)
-      
+
       if (data.type === 'photo-updated') {
         console.log('Photo updated, reloading...')
         loadBackgroundPhoto()
@@ -308,11 +308,11 @@ const setupSSE = () => {
       console.error('Error parsing SSE event:', error)
     }
   }
-  
+
   eventSource.onopen = () => {
     console.log('SSE connection established')
   }
-  
+
   eventSource.onerror = (error) => {
     console.error('SSE connection error:', error)
     eventSource.close()
@@ -322,7 +322,7 @@ const setupSSE = () => {
       setupSSE()
     }, 5000)
   }
-  
+
   return eventSource
 }
 
@@ -330,7 +330,7 @@ const setupSSE = () => {
 onMounted(() => {
   loadSettings()
   loadBackgroundPhoto()
-  
+
   // Setup real-time updates via SSE
   setupSSE()
 })
@@ -351,111 +351,122 @@ onBeforeUnmount(() => {
     <div class="background-overlay"></div>
     <div class="container">
       <div class="content">
-      <header>
-      <h1><img :src="SettingsIcon" alt="Settings" class="title-icon" />Idleview Control</h1>
-      <p class="subtitle">Configure your ambient display</p>
-    </header>
+        <header>
+          <h1><img :src="SettingsIcon" alt="Settings" class="title-icon" />Idleview Control</h1>
+          <p class="subtitle">Configure your ambient display</p>
+        </header>
 
-    <div v-if="isLoading" class="loading-state">
-      <p>Loading settings...</p>
-    </div>
-
-    <div v-else-if="connectionError" class="error-state">
-      <p>⚠️ Cannot connect to Idleview app</p>
-      <p class="error-details">Make sure the Idleview application is running on this computer.</p>
-      <button class="btn btn-primary" @click="loadSettings">
-        Retry Connection
-      </button>
-    </div>
-
-    <main v-else>
-      <!-- Units Section -->
-      <section class="settings-group">
-        <h2 @click="toggleSection('units')" @keydown="handleHeaderKeydown($event, 'units')" tabindex="0" class="collapsible-header">
-          <span class="header-left"><img :src="RulerIcon" alt="Units" class="section-icon" />Units</span>
-          <svg class="chevron" :class="{ expanded: expandedSections.units }" width="20" height="20" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
-            <path d="M5 7.5L10 12.5L15 7.5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-          </svg>
-        </h2>
-        <div v-show="expandedSections.units" class="section-content">
-        <SelectInput label="Temperature Unit" v-model="settings.tempUnit" :options="tempOptions" />
-        <SelectInput label="Time Format" v-model="settings.timeFormat" :options="timeOptions" />
-        <SelectInput label="Date Format" v-model="settings.dateFormat" :options="dateOptions" />
-        <SelectInput label="Wind Speed Unit" v-model="settings.windUnit" :options="windOptions" />
+        <div v-if="isLoading" class="loading-state">
+          <p>Loading settings...</p>
         </div>
-      </section>
 
-      <!-- Display Section -->
-      <section class="settings-group">
-        <h2 @click="toggleSection('display')" @keydown="handleHeaderKeydown($event, 'display')" tabindex="0" class="collapsible-header">
-          <span class="header-left"><img :src="MonitorIcon" alt="Display" class="section-icon" />Display</span>
-          <svg class="chevron" :class="{ expanded: expandedSections.display }" width="20" height="20" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
-            <path d="M5 7.5L10 12.5L15 7.5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-          </svg>
-        </h2>
-        <div v-show="expandedSections.display" class="section-content">
-        <SelectInput label="Theme" v-model="settings.theme" :options="themeOptions" />
-        <ToggleSwitch label="Show Humidity and Wind" v-model="settings.showHumidityWind" />
-        <ToggleSwitch label="Show Precipitation and Cloudiness" v-model="settings.showPrecipitation" />
-        <ToggleSwitch label="Show Sunrise and Sunset timers" v-model="settings.showSunriseSunset" />
-        <ToggleSwitch label="Show CPU Temperature (Linux systems only)" v-model="settings.showCPU" />
+        <div v-else-if="connectionError" class="error-state">
+          <p>⚠️ Cannot connect to Idleview app</p>
+          <p class="error-details">Make sure the Idleview application is running on this computer.</p>
+          <button class="btn btn-primary" @click="loadSettings">
+            Retry Connection
+          </button>
         </div>
-      </section>
 
-      <!-- Photo Settings -->
-      <section class="settings-group">
-        <h2 @click="toggleSection('photos')" class="collapsible-header">
-          <span class="header-left"><img :src="ImageIcon" alt="Photos" class="section-icon" />Photos</span>
-          <svg class="chevron" :class="{ expanded: expandedSections.photos }" width="20" height="20" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
-            <path d="M5 7.5L10 12.5L15 7.5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-          </svg>
-        </h2>
-        <div v-show="expandedSections.photos" class="section-content">
-        <ToggleSwitch label="Enable Festive Photos (Christmas, New Year, Easter, etc.)" v-model="settings.festivePhotos" />
-        <SelectInput label="Photo Refresh Interval" v-model="settings.photoInterval" :options="intervalOptions" />
-        <SelectInput label="Photo Quality" v-model="settings.photoQuality" :options="qualityOptions" />
-        </div>
-      </section>
+        <main v-else>
+          <!-- Units Section -->
+          <section class="settings-group">
+            <h2 @click="toggleSection('units')" @keydown="handleHeaderKeydown($event, 'units')" tabindex="0"
+              class="collapsible-header">
+              <span class="header-left"><img :src="RulerIcon" alt="Units" class="section-icon" />Units</span>
+              <svg class="chevron" :class="{ expanded: expandedSections.units }" width="20" height="20"
+                viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
+                <path d="M5 7.5L10 12.5L15 7.5" stroke="currentColor" stroke-width="2" stroke-linecap="round"
+                  stroke-linejoin="round" />
+              </svg>
+            </h2>
+            <div v-show="expandedSections.units" class="section-content">
+              <SelectInput label="Temperature Unit" v-model="settings.tempUnit" :options="tempOptions" />
+              <SelectInput label="Time Format" v-model="settings.timeFormat" :options="timeOptions" />
+              <SelectInput label="Date Format" v-model="settings.dateFormat" :options="dateOptions" />
+              <SelectInput label="Wind Speed Unit" v-model="settings.windUnit" :options="windOptions" />
+            </div>
+          </section>
 
-      <!-- Dev Section -->
-      <section class="settings-group">
-        <h2 @click="toggleSection('dev')" @keydown="handleHeaderKeydown($event, 'dev')" tabindex="0" class="collapsible-header">
-          <span class="header-left"><img :src="BracesIcon" alt="Dev" class="section-icon" />Developer</span>
-          <svg class="chevron" :class="{ expanded: expandedSections.dev }" width="20" height="20" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
-            <path d="M5 7.5L10 12.5L15 7.5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-          </svg>
-        </h2>
-        <div v-show="expandedSections.dev" class="section-content">
-          <SelectInput label="Card Position" v-model="settings.cardPosition" :options="cardPositionOptions" />
-          <ToggleSwitch label="Show Debug Panel" v-model="settings.showDebug" />
-          
-          <div class="dev-actions">
-            <button class="btn btn-danger" @click="resetSettings">
-              <img :src="ResetIcon" alt="Reset" class="btn-icon" />Reset to Defaults
-            </button>
+          <!-- Display Section -->
+          <section class="settings-group">
+            <h2 @click="toggleSection('display')" @keydown="handleHeaderKeydown($event, 'display')" tabindex="0"
+              class="collapsible-header">
+              <span class="header-left"><img :src="MonitorIcon" alt="Display" class="section-icon" />Display</span>
+              <svg class="chevron" :class="{ expanded: expandedSections.display }" width="20" height="20"
+                viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
+                <path d="M5 7.5L10 12.5L15 7.5" stroke="currentColor" stroke-width="2" stroke-linecap="round"
+                  stroke-linejoin="round" />
+              </svg>
+            </h2>
+            <div v-show="expandedSections.display" class="section-content">
+              <SelectInput label="Theme" v-model="settings.theme" :options="themeOptions" />
+              <ToggleSwitch label="Show Humidity and Wind" v-model="settings.showHumidityWind" />
+              <ToggleSwitch label="Show Precipitation and Cloudiness" v-model="settings.showPrecipitation" />
+              <ToggleSwitch label="Show Sunrise and Sunset timers" v-model="settings.showSunriseSunset" />
+              <ToggleSwitch label="Show CPU Temperature (Linux systems only)" v-model="settings.showCPU" />
+            </div>
+          </section>
+
+          <!-- Photo Settings -->
+          <section class="settings-group">
+            <h2 @click="toggleSection('photos')" class="collapsible-header">
+              <span class="header-left"><img :src="ImageIcon" alt="Photos" class="section-icon" />Photos</span>
+              <svg class="chevron" :class="{ expanded: expandedSections.photos }" width="20" height="20"
+                viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
+                <path d="M5 7.5L10 12.5L15 7.5" stroke="currentColor" stroke-width="2" stroke-linecap="round"
+                  stroke-linejoin="round" />
+              </svg>
+            </h2>
+            <div v-show="expandedSections.photos" class="section-content">
+              <ToggleSwitch label="Enable Festive Photos (Christmas, New Year, Easter, etc.)"
+                v-model="settings.festivePhotos" />
+              <SelectInput label="Photo Refresh Interval" v-model="settings.photoInterval" :options="intervalOptions" />
+              <SelectInput label="Photo Quality" v-model="settings.photoQuality" :options="qualityOptions" />
+            </div>
+          </section>
+
+          <!-- Dev Section -->
+          <section class="settings-group">
+            <h2 @click="toggleSection('dev')" @keydown="handleHeaderKeydown($event, 'dev')" tabindex="0"
+              class="collapsible-header">
+              <span class="header-left"><img :src="BracesIcon" alt="Dev" class="section-icon" />Developer</span>
+              <svg class="chevron" :class="{ expanded: expandedSections.dev }" width="20" height="20"
+                viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
+                <path d="M5 7.5L10 12.5L15 7.5" stroke="currentColor" stroke-width="2" stroke-linecap="round"
+                  stroke-linejoin="round" />
+              </svg>
+            </h2>
+            <div v-show="expandedSections.dev" class="section-content">
+              <ToggleSwitch label="Show Debug Panel" v-model="settings.showDebug" />
+              <SelectInput label="Card Position" v-model="settings.cardPosition" :options="cardPositionOptions" />
+
+              <div class="dev-actions">
+                <button class="btn btn-danger" @click="resetSettings">
+                  <img :src="ResetIcon" alt="Reset" class="btn-icon" />Reset to Defaults
+                </button>
+              </div>
+            </div>
+          </section>
+
+          <div class="messages-container">
+            <div v-for="msg in messages" :key="msg.id" :class="['status-message', msg.type]">
+              {{ msg.text }}
+            </div>
           </div>
-          
+        </main>
+
+        <footer>
           <div v-if="photoCredits" class="photo-credits">
             <h3>Current Photo</h3>
-            <p>Photo by <a :href="photoCredits.authorUrl" target="_blank" rel="noopener">{{ photoCredits.author }}</a></p>
+            <p>Photo by <a :href="photoCredits.authorUrl" target="_blank" rel="noopener">{{ photoCredits.author }}</a>
+              on Unsplash</p>
           </div>
           <div v-else class="photo-credits">
             <p class="no-photo">No photo loaded yet</p>
           </div>
-        </div>
-      </section>
-
-      <div class="messages-container">
-        <div v-for="msg in messages" :key="msg.id" :class="['status-message', msg.type]">
-          {{ msg.text }}
-        </div>
+        </footer>
       </div>
-    </main>
-
-    <footer>
-      <p>Idleview Control Panel · Connect from any device on your network</p>
-    </footer>
-    </div>
     </div>
   </div>
 </template>
@@ -552,6 +563,7 @@ header .subtitle {
     opacity: 0;
     max-height: 0;
   }
+
   to {
     opacity: 1;
     max-height: 1000px;
@@ -571,8 +583,12 @@ header .subtitle {
 .photo-credits {
   margin-top: 2rem;
   padding-top: 1.5rem;
-  border-top: 1px solid #e0e0e0;
   text-align: center;
+  background: white;
+  border-radius: 12px;
+  padding: 1.5rem;
+  margin-bottom: 1.5rem;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
 }
 
 .photo-credits h3 {
