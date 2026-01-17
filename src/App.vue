@@ -395,7 +395,6 @@ onBeforeUnmount(() => {
         </h2>
         <div v-show="expandedSections.display" class="section-content">
         <SelectInput label="Theme" v-model="settings.theme" :options="themeOptions" />
-        <SelectInput label="Card Position" v-model="settings.cardPosition" :options="cardPositionOptions" />
         <ToggleSwitch label="Show Humidity and Wind" v-model="settings.showHumidityWind" />
         <ToggleSwitch label="Show Precipitation and Cloudiness" v-model="settings.showPrecipitation" />
         <ToggleSwitch label="Show Sunrise and Sunset timers" v-model="settings.showSunriseSunset" />
@@ -427,6 +426,7 @@ onBeforeUnmount(() => {
           </svg>
         </h2>
         <div v-show="expandedSections.dev" class="section-content">
+          <SelectInput label="Card Position" v-model="settings.cardPosition" :options="cardPositionOptions" />
           <ToggleSwitch label="Show Debug Panel" v-model="settings.showDebug" />
           
           <div class="dev-actions">
