@@ -26,7 +26,6 @@ const settings = ref({
   showCPU: false,
   showDebug: false,
   theme: 'default',
-  cardPosition: 'left',
   festivePhotos: true,
   photoInterval: '30',
   photoQuality: '80'
@@ -113,16 +112,7 @@ const qualityOptions = [
   { value: '80', label: 'High (80%)' },
   { value: '100', label: 'Maximum (100%)' }
 ]
-const themeOptions = [
-  { value: 'default', label: 'Default' },
-  { value: 'geometric', label: 'Geometric' },
-  { value: 'sidebar', label: 'Sidebar' }
-]
 
-const cardPositionOptions = [
-  { value: 'left', label: 'Left' },
-  { value: 'right', label: 'Right' }
-]
 // Load settings from Idleview server
 const loadSettings = async () => {
   try {
@@ -144,7 +134,6 @@ const loadSettings = async () => {
       showSunriseSunset: data.display?.show_sunrise_sunset ?? false,
       showCPU: data.display?.show_cpu_temp ?? false,
       theme: data.display?.theme || 'default',
-      cardPosition: data.display?.card_position || 'left',
       festivePhotos: data.photos?.enable_festive_queries ?? true,
       showDebug: data.display?.show_debug ?? false,
       photoInterval: String(data.photos?.refresh_interval || 30),
@@ -400,7 +389,6 @@ onBeforeUnmount(() => {
               </svg>
             </h2>
             <div v-show="expandedSections.display" class="section-content">
-              <SelectInput label="Theme" v-model="settings.theme" :options="themeOptions" />
               <ToggleSwitch label="Show Humidity and Wind" v-model="settings.showHumidityWind" />
               <ToggleSwitch label="Show Precipitation and Cloudiness" v-model="settings.showPrecipitation" />
               <ToggleSwitch label="Show Sunrise and Sunset timers" v-model="settings.showSunriseSunset" />
@@ -439,8 +427,7 @@ onBeforeUnmount(() => {
             </h2>
             <div v-show="expandedSections.dev" class="section-content">
               <ToggleSwitch label="Show Debug Panel" v-model="settings.showDebug" />
-              <SelectInput label="Card Position" v-model="settings.cardPosition" :options="cardPositionOptions" />
-
+              
               <div class="dev-actions">
                 <button class="btn btn-danger" @click="resetSettings">
                   <img :src="ResetIcon" alt="Reset" class="btn-icon" />Reset to Defaults
