@@ -1,17 +1,22 @@
 <template>
-  <div class="setting-item">
+  <div class="setting-item" :class="{ 'setting-item--disabled': disabled }">
     <label>
       <span>{{ label }}</span>
     </label>
-    <label class="switch">
-      <input type="checkbox" :checked="modelValue" @change="$emit('update:modelValue', $event.target.checked)">
-      <span class="slider round"></span>
+    <label class="switch" :title="disabled ? disabledMessage : undefined">
+      <input
+        type="checkbox"
+        :checked="modelValue"
+        :disabled="disabled"
+        @change="handleChange($event)"
+      >
+      <span class="slider round" @click="disabled && emit('disabled-click')"></span>
     </label>
   </div>
 </template>
 
 <script setup>
-defineProps({
+const props = defineProps({
   label: {
     type: String,
     required: true
@@ -19,10 +24,27 @@ defineProps({
   modelValue: {
     type: Boolean,
     required: true
+  },
+  disabled: {
+    type: Boolean,
+    default: false
+  },
+  disabledMessage: {
+    type: String,
+    default: ''
   }
 })
 
-defineEmits(['update:modelValue'])
+const emit = defineEmits(['update:modelValue', 'disabled-click'])
+
+const handleChange = (event) => {
+  if (props.disabled) {
+    event.target.checked = props.modelValue
+    emit('disabled-click')
+    return
+  }
+  emit('update:modelValue', event.target.checked)
+}
 </script>
 
 <style scoped>
@@ -55,6 +77,18 @@ label span {
   opacity: 0;
   width: 0;
   height: 0;
+}
+
+.setting-item--disabled {
+  opacity: 0.5;
+}
+
+.setting-item--disabled .switch {
+  cursor: not-allowed;
+}
+
+.setting-item--disabled .slider {
+  cursor: not-allowed;
 }
 
 .slider {

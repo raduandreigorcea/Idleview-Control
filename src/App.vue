@@ -30,6 +30,10 @@ const settings = ref({
   dateFont: 'kaushan_script',
   dateFontWeight: 'medium',
   dateFontSize: 40,
+  showClock: true,
+  showDate: true,
+  showWeekday: true,
+  showTemperature: true,
   showHumidityWind: true,
   showPrecipitation: true,
   showSunriseSunset: true,
@@ -47,10 +51,12 @@ const backgroundPhoto = ref('')
 const bgImageRef = ref(null)
 const photoCredits = ref(null)
 const serverSettings = ref({})
+const customQuery = ref('')
 let messageIdCounter = 0
 let ignoringSSEUpdate = false
 let isSilentReloading = false
 let saveDebounceTimer = null
+let customQueryDebounceTimer = null
 
 // Track expanded sections - load from localStorage or default to collapsed
 const loadExpandedSections = () => {
@@ -299,6 +305,10 @@ const loadSettings = async (silent = false) => {
       dateFont: normalizeDateFontValue(data.display?.date_font),
       dateFontWeight: data.display?.date_font_weight || 'medium',
       dateFontSize: Number(data.display?.date_font_size ?? 40),
+      showClock: data.display?.show_clock ?? false,
+      showDate: data.display?.show_date ?? false,
+      showWeekday: data.display?.show_weekday ?? false,
+      showTemperature: data.display?.show_temperature ?? false,
       showHumidityWind: data.display?.show_humidity_wind ?? false,
       showPrecipitation: data.display?.show_precipitation_cloudiness ?? false,
       showSunriseSunset: data.display?.show_sunrise_sunset ?? false,
@@ -308,6 +318,7 @@ const loadSettings = async (silent = false) => {
       photoInterval: String(data.photos?.refresh_interval || 30),
       photoQuality: String(data.photos?.photo_quality || 80)
     }
+    customQuery.value = data.photos?.custom_query ?? ''
 
     // Set isLoading to false after settings are applied to prevent auto-save trigger
     await new Promise(resolve => setTimeout(resolve, 0))
@@ -367,6 +378,10 @@ const saveSettings = async () => {
     }
     payload.display = {
       ...(payload.display || {}),
+      show_clock: settings.value.showClock,
+      show_date: settings.value.showDate,
+      show_weekday: settings.value.showWeekday,
+      show_temperature: settings.value.showTemperature,
       show_humidity_wind: settings.value.showHumidityWind,
       show_precipitation_cloudiness: settings.value.showPrecipitation,
       show_sunrise_sunset: settings.value.showSunriseSunset,
@@ -424,6 +439,26 @@ const resetSettings = async () => {
   }
 }
 
+// Save custom photo query via PATCH (deep-merge — only custom_query changes)
+const saveCustomQuery = async () => {
+  ignoringSSEUpdate = true
+  setTimeout(() => { ignoringSSEUpdate = false }, 1000)
+  try {
+    const response = await fetch(`${API_BASE}/api/settings`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ photos: { custom_query: customQuery.value } })
+    })
+    if (!response.ok) throw new Error('Failed to save custom query')
+    const updated = await response.json()
+    serverSettings.value = updated
+    showMessage('✅ Settings saved successfully!', 'success')
+  } catch (error) {
+    console.error('Error saving custom query:', error)
+    showMessage('❌ Failed to save settings', 'error')
+  }
+}
+
 // Watch settings and auto-save (debounced to reduce PUT requests and SSE noise)
 watch(settings, () => {
   if (!isLoading.value && !isSilentReloading && !connectionError.value) {
@@ -431,6 +466,14 @@ watch(settings, () => {
     saveDebounceTimer = setTimeout(saveSettings, 300)
   }
 }, { deep: true })
+
+// Watch customQuery and PATCH (debounced)
+watch(customQuery, () => {
+  if (!isLoading.value && !isSilentReloading && !connectionError.value) {
+    clearTimeout(customQueryDebounceTimer)
+    customQueryDebounceTimer = setTimeout(saveCustomQuery, 300)
+  }
+})
 
 // Keep background image out of Vue's VDOM — update imperatively so re-renders never touch it
 watch(backgroundPhoto, (url) => {
@@ -560,6 +603,10 @@ onBeforeUnmount(() => {
               </svg>
             </h2>
             <div v-show="expandedSections.display" class="section-content">
+              <ToggleSwitch label="Show Clock" v-model="settings.showClock" />
+              <ToggleSwitch label="Show Date" v-model="settings.showDate" />
+              <ToggleSwitch label="Show Weekday" v-model="settings.showWeekday" />
+              <ToggleSwitch label="Show Temperature" v-model="settings.showTemperature" />
               <ToggleSwitch label="Show Humidity and Wind" v-model="settings.showHumidityWind" />
               <ToggleSwitch label="Show Precipitation and Cloudiness" v-model="settings.showPrecipitation" />
               <ToggleSwitch label="Show Sunrise and Sunset timers" v-model="settings.showSunriseSunset" />
@@ -701,8 +748,20 @@ onBeforeUnmount(() => {
               </svg>
             </h2>
             <div v-show="expandedSections.photos" class="section-content">
-              <ToggleSwitch label="Enable Festive Photos (Christmas, New Year, Easter, etc.)"
-                v-model="settings.festivePhotos" />
+              <div class="setting-item">
+                <label for="custom-query">Custom Search Query</label>
+                <div class="number-input-wrapper">
+                  <input id="custom-query" v-model="customQuery" type="text" class="number-input"
+                    placeholder="e.g. misty forest" />
+                </div>
+              </div>
+              <ToggleSwitch
+                label="Enable Festive Photos (Christmas, New Year, Easter, etc.)"
+                v-model="settings.festivePhotos"
+                :disabled="!!customQuery.trim()"
+                disabled-message="Festive photos are unavailable while a custom search query is active."
+                @disabled-click="showMessage('⚠️ Festive photos cannot be toggled while a custom search query is active.', 'warning')"
+              />
               <SelectInput label="Photo Refresh Interval" v-model="settings.photoInterval" :options="intervalOptions" />
               <SelectInput label="Photo Quality" v-model="settings.photoQuality" :options="qualityOptions" />
             </div>
