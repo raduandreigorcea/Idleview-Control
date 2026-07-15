@@ -1,7 +1,9 @@
 <script setup>
-import { ref, computed, onMounted, onBeforeUnmount, watch } from 'vue'
+import { ref, computed, onMounted, onBeforeUnmount, watch, nextTick } from 'vue'
 import SelectInput from './components/SelectInput.vue'
 import ToggleSwitch from './components/ToggleSwitch.vue'
+import FontPicker from './components/FontPicker.vue'
+import ScreenPreview from './components/ScreenPreview.vue'
 import RulerIcon from './assets/ruler-dimension-line.svg'
 import MonitorIcon from './assets/monitor-cog.svg'
 import ImageIcon from './assets/image.svg'
@@ -9,12 +11,39 @@ import SettingsIcon from './assets/settings.svg'
 import ResetIcon from './assets/book-marked.svg'
 import BracesIcon from './assets/braces.svg'
 import TypeIcon from './assets/type-outline.svg'
+import RefreshIcon from './assets/refresh-ccw.svg'
 
 
-// API base URL - uses relative URLs
-// Vite proxy handles forwarding to localhost:3000 in development
-// In production, served from the same origin
+// Relative URLs throughout. In production the panel is served by the Idleview app
+// itself, so it is already same-origin; in development the Vite proxy in
+// vite.config.js forwards /api to the app on port 8737.
 const API_BASE = ''
+
+// Writes require the control token shown on the Idleview screen (press T there).
+// Reads are open, so the panel can render before it is paired.
+const TOKEN_KEY = 'idleviewControlToken'
+const token = ref(localStorage.getItem(TOKEN_KEY) || '')
+const tokenInput = ref('')
+const needsToken = ref(false)
+const tokenError = ref('')
+
+// Identifies this panel so the server can label the broadcast it triggers, letting us
+// skip our own echo. The old code muted ALL settings events for a second after any
+// save, which silently dropped a second panel's legitimate change if it landed inside
+// that window.
+const clientId = (() => {
+  const existing = sessionStorage.getItem('idleviewClientId')
+  if (existing) return existing
+  const fresh = `panel-${Math.random().toString(36).slice(2)}-${Date.now().toString(36)}`
+  sessionStorage.setItem('idleviewClientId', fresh)
+  return fresh
+})()
+
+const authHeaders = () => ({
+  'Content-Type': 'application/json',
+  'X-Idleview-Token': token.value,
+  'X-Idleview-Client': clientId
+})
 
 const settings = ref({
   tempUnit: 'celsius',
@@ -22,13 +51,13 @@ const settings = ref({
   dateFormat: 'dmy',
   windUnit: 'kmh',
   clockFont: 'roboto',
-  clockFontWeight: 'regular',
+  clockFontWeight: '400',
   clockFontSize: 180,
   weekdayFont: 'great_vibes',
-  weekdayFontWeight: 'thin',
+  weekdayFontWeight: '400',
   weekdayFontSize: 70,
   dateFont: 'kaushan_script',
-  dateFontWeight: 'medium',
+  dateFontWeight: '400',
   dateFontSize: 40,
   showClock: true,
   showDate: true,
@@ -50,13 +79,13 @@ const connectionError = ref(false)
 const backgroundPhoto = ref('')
 const bgImageRef = ref(null)
 const photoCredits = ref(null)
-const serverSettings = ref({})
 const customQuery = ref('')
+
+const isRefreshingPhoto = ref(false)
+
 let messageIdCounter = 0
-let ignoringSSEUpdate = false
-let isSilentReloading = false
+let isApplyingServerState = false
 let saveDebounceTimer = null
-let customQueryDebounceTimer = null
 
 // Track expanded sections - load from localStorage or default to collapsed
 const loadExpandedSections = () => {
@@ -120,147 +149,121 @@ const windOptions = [
   { value: 'ms', label: 'm/s' }
 ]
 
-const clockFontOptions = [
-  { value: 'roboto', label: 'Roboto' },
-  { value: 'open_sans', label: 'Open Sans' },
-  { value: 'google_sans', label: 'Google Sans' },
-  { value: 'inter', label: 'Inter' },
-  { value: 'montserrat', label: 'Montserrat' },
-  { value: 'poppins', label: 'Poppins' },
-  { value: 'lato', label: 'Lato' },
-  { value: 'noto_sans_japanese', label: 'Noto Sans Japanese' },
-  { value: 'arimo', label: 'Arimo' },
-  { value: 'roboto_condensed', label: 'Roboto Condensed' },
-  { value: 'unbounded', label: 'Unbounded' }
-]
+// ===== Fonts =====
+//
+// The catalogue comes from the backend (GET /api/fonts). This file used to carry its
+// own font lists, CSS stacks and weight names, and so did the dashboard, and so did two
+// hand-written Google Fonts <link> tags. They disagreed: "Google Sans" was offered and
+// is not on Google Fonts at all, "Space Grotesk" was a fallback nobody loaded, and every
+// font offered "Thin" (200) including Arimo, which publishes nothing below 400.
+//
+// Now there is one list, the stylesheet is generated from it, and the weights on offer
+// are the ones the chosen font actually has.
+const fontCatalogue = ref(null)
 
-const CLOCK_FONT_MAP = {
-  roboto:             "'Roboto', sans-serif",
-  open_sans:          "'Open Sans', sans-serif",
-  google_sans:        "'Google Sans', sans-serif",
-  inter:              "'Inter', sans-serif",
-  montserrat:         "'Montserrat', sans-serif",
-  poppins:            "'Poppins', sans-serif",
-  lato:               "'Lato', sans-serif",
-  noto_sans_japanese: "'Noto Sans JP', sans-serif",
-  arimo:              "'Arimo', sans-serif",
-  roboto_condensed:   "'Roboto Condensed', sans-serif",
-  unbounded:          "'Unbounded', sans-serif"
+const fontsFor = (role) => {
+  const catalogue = fontCatalogue.value
+  if (!catalogue?.fonts || !Array.isArray(catalogue[role])) return []
+  return catalogue[role].map(id => catalogue.fonts.find(font => font.id === id)).filter(Boolean)
 }
 
-const fontWeightOptions = [
-  { value: 'thin', label: 'Thin' },
-  { value: 'regular', label: 'Regular' },
-  { value: 'medium', label: 'Medium' }
-]
+const clockFonts = computed(() => fontsFor('clock'))
+const weekdayFonts = computed(() => fontsFor('weekday'))
+const dateFonts = computed(() => fontsFor('date'))
 
-const normalizeClockFontValue = (value) => {
-  if (clockFontOptions.some(o => o.value === value)) {
-    return value
-  }
-  return 'roboto'
+const WEIGHT_LABELS = {
+  100: 'Thin',
+  200: 'Extra Light',
+  300: 'Light',
+  400: 'Regular',
+  500: 'Medium',
+  600: 'Semi Bold',
+  700: 'Bold',
+  800: 'Extra Bold',
+  900: 'Black'
 }
 
-const weekdayFontOptions = [
-  { value: 'sacramento', label: 'Sacramento' },
-  { value: 'great_vibes', label: 'Great Vibes' },
-  { value: 'dancing_script', label: 'Dancing Script' },
-  { value: 'pacifico', label: 'Pacifico' },
-  { value: 'satisfy', label: 'Satisfy' },
-  { value: 'pinyon_script', label: 'Pinyon Script' },
-  { value: 'alex_brush', label: 'Alex Brush' },
-  { value: 'kaushan_script', label: 'Kaushan Script' },
-  { value: 'italianno', label: 'Italianno' }
-]
-
-const WEEKDAY_FONT_MAP = {
-  sacramento:     "'Sacramento', sans-serif",
-  great_vibes:    "'Great Vibes', sans-serif",
-  dancing_script: "'Dancing Script', sans-serif",
-  pacifico:       "'Pacifico', sans-serif",
-  satisfy:        "'Satisfy', sans-serif",
-  pinyon_script:  "'Pinyon Script', sans-serif",
-  alex_brush:     "'Alex Brush', sans-serif",
-  kaushan_script: "'Kaushan Script', sans-serif",
-  italianno:      "'Italianno', sans-serif"
+// Only the weights the selected font really ships. A face with a single weight (most of
+// the script fonts) collapses to one option instead of pretending to offer six.
+const weightOptionsFor = (fontId) => {
+  const font = fontCatalogue.value?.fonts.find(f => f.id === fontId)
+  if (!font) return []
+  return font.weights.map(weight => ({
+    value: String(weight),
+    label: `${WEIGHT_LABELS[weight] || weight} (${weight})`
+  }))
 }
 
-const normalizeWeekdayFontValue = (value) => {
-  if (weekdayFontOptions.some(o => o.value === value)) {
-    return value
-  }
-  return 'great_vibes'
+const clockWeightOptions = computed(() => weightOptionsFor(settings.value.clockFont))
+const weekdayWeightOptions = computed(() => weightOptionsFor(settings.value.weekdayFont))
+const dateWeightOptions = computed(() => weightOptionsFor(settings.value.dateFont))
+
+// Changing font can strand a weight the new face does not have. The backend would snap
+// it anyway, but doing it here keeps the control showing what will actually be saved.
+const snapWeight = (fontId, current) => {
+  const font = fontCatalogue.value?.fonts.find(f => f.id === fontId)
+  if (!font || font.weights.includes(Number(current))) return String(current)
+  const nearest = font.weights.reduce((best, weight) =>
+    Math.abs(weight - Number(current)) < Math.abs(best - Number(current)) ? weight : best
+  )
+  return String(nearest)
 }
 
-const dateFontOptions = [
-  { value: 'sacramento', label: 'Sacramento' },
-  { value: 'great_vibes', label: 'Great Vibes' },
-  { value: 'dancing_script', label: 'Dancing Script' },
-  { value: 'pacifico', label: 'Pacifico' },
-  { value: 'satisfy', label: 'Satisfy' },
-  { value: 'pinyon_script', label: 'Pinyon Script' },
-  { value: 'alex_brush', label: 'Alex Brush' },
-  { value: 'kaushan_script', label: 'Kaushan Script' },
-  { value: 'italianno', label: 'Italianno' },
-  { value: 'roboto', label: 'Roboto' },
-  { value: 'open_sans', label: 'Open Sans' },
-  { value: 'google_sans', label: 'Google Sans' },
-  { value: 'inter', label: 'Inter' },
-  { value: 'montserrat', label: 'Montserrat' },
-  { value: 'poppins', label: 'Poppins' },
-  { value: 'lato', label: 'Lato' },
-  { value: 'noto_sans_japanese', label: 'Noto Sans Japanese' },
-  { value: 'arimo', label: 'Arimo' },
-  { value: 'roboto_condensed', label: 'Roboto Condensed' },
-  { value: 'unbounded', label: 'Unbounded' }
-]
-
-const DATE_FONT_MAP = { ...WEEKDAY_FONT_MAP, ...CLOCK_FONT_MAP }
-
-const normalizeDateFontValue = (value) => {
-  if (dateFontOptions.some(o => o.value === value)) {
-    return value
-  }
-  return 'kaushan_script'
-}
-
-const CLOCK_FONT_SIZE_MIN = 120
-const CLOCK_FONT_SIZE_MAX = 260
-
-const clockFontSizeError = computed(() => {
-  if (!Number.isFinite(settings.value.clockFontSize)) {
-    return `Clock Font Size must be between ${CLOCK_FONT_SIZE_MIN} and ${CLOCK_FONT_SIZE_MAX}.`
-  }
-
-  if (settings.value.clockFontSize < CLOCK_FONT_SIZE_MIN || settings.value.clockFontSize > CLOCK_FONT_SIZE_MAX) {
-    return `Clock Font Size must be between ${CLOCK_FONT_SIZE_MIN} and ${CLOCK_FONT_SIZE_MAX}.`
-  }
-
-  return ''
+watch(() => settings.value.clockFont, (id) => {
+  settings.value.clockFontWeight = snapWeight(id, settings.value.clockFontWeight)
+})
+watch(() => settings.value.weekdayFont, (id) => {
+  settings.value.weekdayFontWeight = snapWeight(id, settings.value.weekdayFontWeight)
+})
+watch(() => settings.value.dateFont, (id) => {
+  settings.value.dateFontWeight = snapWeight(id, settings.value.dateFontWeight)
 })
 
-const SECONDARY_FONT_SIZE_MIN = 40
-const SECONDARY_FONT_SIZE_MAX = 200
+// Size bounds also come from the backend, so the panel, the screen and the validator
+// cannot disagree about them the way they used to (the dashboard capped the weekday and
+// date sizes at 120 while this panel happily accepted 200).
+const CLOCK_FONT_SIZE_MIN = computed(() => fontCatalogue.value?.clock_size[0] ?? 120)
+const CLOCK_FONT_SIZE_MAX = computed(() => fontCatalogue.value?.clock_size[1] ?? 260)
+const SECONDARY_FONT_SIZE_MIN = computed(() => fontCatalogue.value?.secondary_size[0] ?? 40)
+const SECONDARY_FONT_SIZE_MAX = computed(() => fontCatalogue.value?.secondary_size[1] ?? 200)
 
-const weekdayFontSizeError = computed(() => {
-  if (!Number.isFinite(settings.value.weekdayFontSize)) {
-    return `Weekday Font Size must be between ${SECONDARY_FONT_SIZE_MIN} and ${SECONDARY_FONT_SIZE_MAX}.`
+const loadFontCatalogue = async () => {
+  try {
+    const response = await fetch(`${API_BASE}/api/fonts`)
+    if (!response.ok) throw new Error('Failed to fetch the font catalogue')
+    fontCatalogue.value = await response.json()
+
+    // Request exactly the fonts and weights the catalogue declares.
+    const link = document.createElement('link')
+    link.rel = 'stylesheet'
+    link.href = fontCatalogue.value.stylesheet
+    document.head.appendChild(link)
+  } catch (error) {
+    console.error('Error loading the font catalogue:', error)
   }
-  if (settings.value.weekdayFontSize < SECONDARY_FONT_SIZE_MIN || settings.value.weekdayFontSize > SECONDARY_FONT_SIZE_MAX) {
-    return `Weekday Font Size must be between ${SECONDARY_FONT_SIZE_MIN} and ${SECONDARY_FONT_SIZE_MAX}.`
+}
+
+const sizeError = (label, value, min, max) => {
+  if (!Number.isFinite(value) || value < min || value > max) {
+    return `${label} must be between ${min} and ${max}.`
   }
   return ''
-})
+}
 
-const dateFontSizeError = computed(() => {
-  if (!Number.isFinite(settings.value.dateFontSize)) {
-    return `Date Font Size must be between ${SECONDARY_FONT_SIZE_MIN} and ${SECONDARY_FONT_SIZE_MAX}.`
-  }
-  if (settings.value.dateFontSize < SECONDARY_FONT_SIZE_MIN || settings.value.dateFontSize > SECONDARY_FONT_SIZE_MAX) {
-    return `Date Font Size must be between ${SECONDARY_FONT_SIZE_MIN} and ${SECONDARY_FONT_SIZE_MAX}.`
-  }
-  return ''
-})
+const clockFontSizeError = computed(() => sizeError(
+  'Clock Font Size', settings.value.clockFontSize,
+  CLOCK_FONT_SIZE_MIN.value, CLOCK_FONT_SIZE_MAX.value
+))
+
+const weekdayFontSizeError = computed(() => sizeError(
+  'Weekday Font Size', settings.value.weekdayFontSize,
+  SECONDARY_FONT_SIZE_MIN.value, SECONDARY_FONT_SIZE_MAX.value
+))
+
+const dateFontSizeError = computed(() => sizeError(
+  'Date Font Size', settings.value.dateFontSize,
+  SECONDARY_FONT_SIZE_MIN.value, SECONDARY_FONT_SIZE_MAX.value
+))
 
 const intervalOptions = [
   { value: '15', label: '15 minutes' },
@@ -275,59 +278,63 @@ const qualityOptions = [
   { value: '100', label: 'Maximum (100%)' }
 ]
 
-// Load settings from Idleview server
+// Load settings from Idleview server.
+//
+// The `??` fallbacks below default to TRUE, matching Settings::default() in Rust. They
+// used to default to false, so any field the server omitted would have silently blanked
+// that element on the screen while the backend believed it was showing it.
 const loadSettings = async (silent = false) => {
   try {
-    if (!silent) {
-      isLoading.value = true
-    } else {
-      isSilentReloading = true
-    }
+    if (!silent) isLoading.value = true
+    isApplyingServerState = true
     connectionError.value = false
+
     const response = await fetch(`${API_BASE}/api/settings`)
     if (!response.ok) throw new Error('Failed to fetch settings')
 
     const data = await response.json()
-    serverSettings.value = data
 
-    // Map server settings to UI format
     settings.value = {
       tempUnit: data.units?.temperature_unit || 'celsius',
       timeFormat: data.units?.time_format || '24h',
       dateFormat: data.units?.date_format || 'dmy',
       windUnit: data.units?.wind_speed_unit || 'kmh',
-      clockFont: normalizeClockFontValue(data.display?.clock_font),
-      clockFontWeight: data.display?.clock_font_weight || 'regular',
+      // No normalize* here any more: the backend validates every font id and weight
+      // against the catalogue before it stores them, so what it hands back is already
+      // a font this role can use at a weight that font actually has.
+      clockFont: data.display?.clock_font ?? 'roboto',
+      clockFontWeight: String(data.display?.clock_font_weight ?? 400),
       clockFontSize: Number(data.display?.clock_font_size ?? 180),
-      weekdayFont: normalizeWeekdayFontValue(data.display?.weekday_font),
-      weekdayFontWeight: data.display?.weekday_font_weight || 'thin',
+      weekdayFont: data.display?.weekday_font ?? 'great_vibes',
+      weekdayFontWeight: String(data.display?.weekday_font_weight ?? 400),
       weekdayFontSize: Number(data.display?.weekday_font_size ?? 70),
-      dateFont: normalizeDateFontValue(data.display?.date_font),
-      dateFontWeight: data.display?.date_font_weight || 'medium',
+      dateFont: data.display?.date_font ?? 'kaushan_script',
+      dateFontWeight: String(data.display?.date_font_weight ?? 400),
       dateFontSize: Number(data.display?.date_font_size ?? 40),
-      showClock: data.display?.show_clock ?? false,
-      showDate: data.display?.show_date ?? false,
-      showWeekday: data.display?.show_weekday ?? false,
-      showTemperature: data.display?.show_temperature ?? false,
-      showHumidityWind: data.display?.show_humidity_wind ?? false,
-      showPrecipitation: data.display?.show_precipitation_cloudiness ?? false,
-      showSunriseSunset: data.display?.show_sunrise_sunset ?? false,
-      showLocation: data.display?.show_location ?? false,
-      festivePhotos: data.photos?.enable_festive_queries ?? true,
+      showClock: data.display?.show_clock ?? true,
+      showDate: data.display?.show_date ?? true,
+      showWeekday: data.display?.show_weekday ?? true,
+      showTemperature: data.display?.show_temperature ?? true,
+      showHumidityWind: data.display?.show_humidity_wind ?? true,
+      showPrecipitation: data.display?.show_precipitation_cloudiness ?? true,
+      showSunriseSunset: data.display?.show_sunrise_sunset ?? true,
+      showLocation: data.display?.show_location ?? true,
       showDebug: data.display?.show_debug ?? false,
-      photoInterval: String(data.photos?.refresh_interval || 30),
-      photoQuality: String(data.photos?.photo_quality || 80)
+      festivePhotos: data.photos?.enable_festive_queries ?? true,
+      photoInterval: String(data.photos?.refresh_interval ?? 30),
+      photoQuality: String(data.photos?.photo_quality ?? 80)
     }
     customQuery.value = data.photos?.custom_query ?? ''
 
-    // Set isLoading to false after settings are applied to prevent auto-save trigger
-    await new Promise(resolve => setTimeout(resolve, 0))
+    // Let the watcher see the new values land before it is allowed to fire again,
+    // otherwise applying server state would immediately queue a save of that state.
+    await nextTick()
   } catch (error) {
     console.error('Error loading settings:', error)
     connectionError.value = true
   } finally {
+    isApplyingServerState = false
     isLoading.value = false
-    isSilentReloading = false
   }
 }
 
@@ -356,66 +363,87 @@ const loadBackgroundPhoto = async () => {
   }
 }
 
-// Save settings to Idleview server
+// Send a write, surfacing a rejected token as a prompt to re-pair rather than a
+// generic failure.
+const authedFetch = async (path, options = {}) => {
+  const response = await fetch(`${API_BASE}${path}`, {
+    ...options,
+    headers: { ...authHeaders(), ...(options.headers || {}) }
+  })
+
+  if (response.status === 401) {
+    needsToken.value = true
+    tokenError.value = token.value
+      ? 'That token was rejected. Check the one shown on the Idleview screen.'
+      : ''
+    throw new Error('unauthorized')
+  }
+
+  if (!response.ok) throw new Error(`Request failed: ${response.status}`)
+  return response
+}
+
+// One writer, one request shape.
+//
+// Settings used to be saved by a full-replace PUT while the custom query went through a
+// merge PATCH, each on its own debounce. A PUT firing before the PATCH's response had
+// landed would ship a stale custom_query and silently clobber what had just been typed.
+// Everything now goes through a single debounced PATCH carrying the whole UI state, so
+// there is no second writer to race with.
+const buildPayload = () => ({
+  units: {
+    temperature_unit: settings.value.tempUnit,
+    time_format: settings.value.timeFormat,
+    date_format: settings.value.dateFormat,
+    wind_speed_unit: settings.value.windUnit
+  },
+  display: {
+    show_clock: settings.value.showClock,
+    show_date: settings.value.showDate,
+    show_weekday: settings.value.showWeekday,
+    show_temperature: settings.value.showTemperature,
+    show_humidity_wind: settings.value.showHumidityWind,
+    show_precipitation_cloudiness: settings.value.showPrecipitation,
+    show_sunrise_sunset: settings.value.showSunriseSunset,
+    show_location: settings.value.showLocation,
+    show_debug: settings.value.showDebug,
+    clock_font: settings.value.clockFont,
+    // Numbers, not words. "thin"/"regular"/"medium" mapped onto weights that half these
+    // families do not publish; the backend now stores a real weight (100-900).
+    clock_font_weight: Number(settings.value.clockFontWeight),
+    clock_font_size: Number(settings.value.clockFontSize),
+    weekday_font: settings.value.weekdayFont,
+    weekday_font_weight: Number(settings.value.weekdayFontWeight),
+    weekday_font_size: Number(settings.value.weekdayFontSize),
+    date_font: settings.value.dateFont,
+    date_font_weight: Number(settings.value.dateFontWeight),
+    date_font_size: Number(settings.value.dateFontSize)
+  },
+  photos: {
+    refresh_interval: Number(settings.value.photoInterval),
+    // A number, matching the u8 the backend declares. This used to be sent as a number
+    // and stored as a String, which is the only reason the backend needed a bespoke
+    // string-or-number deserializer.
+    photo_quality: Number(settings.value.photoQuality),
+    enable_festive_queries: settings.value.festivePhotos,
+    custom_query: customQuery.value
+  }
+})
+
 const saveSettings = async () => {
   if (clockFontSizeError.value || weekdayFontSizeError.value || dateFontSizeError.value) {
     return
   }
 
-  // Ignore SSE settings-updated events for a short time to prevent reload loop
-  ignoringSSEUpdate = true
-  setTimeout(() => { ignoringSSEUpdate = false }, 1000)
-
   try {
-    // Merge UI values into the last full server payload so unknown fields are preserved.
-    const payload = JSON.parse(JSON.stringify(serverSettings.value || {}))
-    payload.units = {
-      ...(payload.units || {}),
-      temperature_unit: settings.value.tempUnit,
-      time_format: settings.value.timeFormat,
-      date_format: settings.value.dateFormat,
-      wind_speed_unit: settings.value.windUnit
-    }
-    payload.display = {
-      ...(payload.display || {}),
-      show_clock: settings.value.showClock,
-      show_date: settings.value.showDate,
-      show_weekday: settings.value.showWeekday,
-      show_temperature: settings.value.showTemperature,
-      show_humidity_wind: settings.value.showHumidityWind,
-      show_precipitation_cloudiness: settings.value.showPrecipitation,
-      show_sunrise_sunset: settings.value.showSunriseSunset,
-      show_location: settings.value.showLocation,
-      clock_font: settings.value.clockFont,
-      clock_font_weight: settings.value.clockFontWeight,
-      clock_font_size: settings.value.clockFontSize,
-      weekday_font: settings.value.weekdayFont,
-      weekday_font_weight: settings.value.weekdayFontWeight,
-      weekday_font_size: settings.value.weekdayFontSize,
-      date_font: settings.value.dateFont,
-      date_font_weight: settings.value.dateFontWeight,
-      date_font_size: settings.value.dateFontSize,
-      show_debug: settings.value.showDebug
-    }
-    payload.photos = {
-      ...(payload.photos || {}),
-      refresh_interval: parseInt(settings.value.photoInterval),
-      photo_quality: parseInt(settings.value.photoQuality),
-      enable_festive_queries: settings.value.festivePhotos
-    }
-
-    const response = await fetch(`${API_BASE}/api/settings`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload)
+    const response = await authedFetch('/api/settings', {
+      method: 'PATCH',
+      body: JSON.stringify(buildPayload())
     })
-
-    if (!response.ok) throw new Error('Failed to save settings')
-
-    serverSettings.value = payload
-
+    await response.json()
     showMessage('✅ Settings saved successfully!', 'success')
   } catch (error) {
+    if (error.message === 'unauthorized') return
     console.error('Error saving settings:', error)
     showMessage('❌ Failed to save settings', 'error')
   }
@@ -428,52 +456,81 @@ const resetSettings = async () => {
   }
 
   try {
-    const response = await fetch(`${API_BASE}/api/settings/reset`, { method: 'POST' })
-    if (!response.ok) throw new Error('Failed to reset settings')
-
-    await loadSettings() // Reload from server
+    await authedFetch('/api/settings/reset', { method: 'POST' })
+    await loadSettings()
     showMessage('🔄️ Settings reset to defaults', 'success')
   } catch (error) {
+    if (error.message === 'unauthorized') return
     console.error('Error resetting settings:', error)
     showMessage('❌ Failed to reset settings', 'error')
   }
 }
 
-// Save custom photo query via PATCH (deep-merge — only custom_query changes)
-const saveCustomQuery = async () => {
-  ignoringSSEUpdate = true
-  setTimeout(() => { ignoringSSEUpdate = false }, 1000)
+// There is deliberately no Unsplash key field here. Photos come from a proxy that holds
+// the key server-side, so a user never needs one - and the app never holds a secret that
+// could be extracted from their machine.
+
+// Ask the screen for a new photo right now. The dashboard has always listened for this
+// event; until now nothing could emit it.
+const refreshPhoto = async () => {
+  isRefreshingPhoto.value = true
   try {
-    const response = await fetch(`${API_BASE}/api/settings`, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ photos: { custom_query: customQuery.value } })
-    })
-    if (!response.ok) throw new Error('Failed to save custom query')
-    const updated = await response.json()
-    serverSettings.value = updated
-    showMessage('✅ Settings saved successfully!', 'success')
+    await authedFetch('/api/photo/refresh', { method: 'POST' })
+    showMessage('🔄️ New photo requested', 'success')
   } catch (error) {
-    console.error('Error saving custom query:', error)
-    showMessage('❌ Failed to save settings', 'error')
+    if (error.message !== 'unauthorized') {
+      console.error('Error requesting a photo refresh:', error)
+      showMessage('❌ Failed to request a new photo', 'error')
+    }
+  } finally {
+    isRefreshingPhoto.value = false
   }
 }
 
-// Watch settings and auto-save (debounced to reduce PUT requests and SSE noise)
-watch(settings, () => {
-  if (!isLoading.value && !isSilentReloading && !connectionError.value) {
-    clearTimeout(saveDebounceTimer)
-    saveDebounceTimer = setTimeout(saveSettings, 300)
-  }
-}, { deep: true })
+// Pair with the screen: check the typed token before storing it, so a typo is caught
+// here rather than on the next edit.
+const submitToken = async () => {
+  const candidate = tokenInput.value.trim().toUpperCase()
+  if (!candidate) return
 
-// Watch customQuery and PATCH (debounced)
-watch(customQuery, () => {
-  if (!isLoading.value && !isSilentReloading && !connectionError.value) {
-    clearTimeout(customQueryDebounceTimer)
-    customQueryDebounceTimer = setTimeout(saveCustomQuery, 300)
+  try {
+    const response = await fetch(`${API_BASE}/api/auth/check`, {
+      headers: { 'X-Idleview-Token': candidate }
+    })
+    if (!response.ok) {
+      tokenError.value = 'That token was rejected. Check the one shown on the Idleview screen.'
+      return
+    }
+
+    token.value = candidate
+    localStorage.setItem(TOKEN_KEY, candidate)
+    tokenInput.value = ''
+    tokenError.value = ''
+    needsToken.value = false
+
+    // Only now are the settings fetched and rendered.
+    await loadSettings()
+    showMessage('✅ Paired with Idleview', 'success')
+  } catch (error) {
+    console.error('Error verifying token:', error)
+    tokenError.value = 'Could not reach Idleview.'
   }
-})
+}
+
+// Forget the token and drop straight back to the pairing prompt.
+const unpair = () => {
+  localStorage.removeItem(TOKEN_KEY)
+  token.value = ''
+  needsToken.value = true
+  tokenError.value = ''
+}
+
+// A single debounced writer covering every editable field, including the custom query.
+watch([settings, customQuery], () => {
+  if (isLoading.value || isApplyingServerState || connectionError.value) return
+  clearTimeout(saveDebounceTimer)
+  saveDebounceTimer = setTimeout(saveSettings, 300)
+}, { deep: true })
 
 // Keep background image out of Vue's VDOM — update imperatively so re-renders never touch it
 watch(backgroundPhoto, (url) => {
@@ -493,17 +550,16 @@ const setupSSE = () => {
   eventSource.onmessage = (event) => {
     try {
       const data = JSON.parse(event.data)
-      console.log('SSE event received:', data)
 
       if (data.type === 'photo-updated') {
-        console.log('Photo updated, reloading...')
         loadBackgroundPhoto()
       } else if (data.type === 'settings-updated') {
-        if (ignoringSSEUpdate) {
-          console.log('Settings updated by us, ignoring SSE event')
-          return
-        }
-        console.log('Settings updated externally, reloading...')
+        // Nothing to refresh while unpaired - the settings are not on screen.
+        if (needsToken.value) return
+        // Skip only the echo of our own write. The previous version muted every
+        // settings event for a second after any save, so a second panel's change
+        // landing in that window was dropped and this panel went quietly stale.
+        if (data.origin && data.origin === clientId) return
         loadSettings(true)
       }
     } catch (error) {
@@ -528,9 +584,48 @@ const setupSSE = () => {
   return eventSource
 }
 
-// Load settings on mount
+// Is this panel paired? Checked before anything is fetched, because an unpaired panel
+// shows no settings at all - not a read-only view of them.
+const verifyStoredToken = async () => {
+  if (!token.value) {
+    needsToken.value = true
+    return false
+  }
+
+  try {
+    const response = await fetch(`${API_BASE}/api/auth/check`, {
+      headers: { 'X-Idleview-Token': token.value }
+    })
+    needsToken.value = !response.ok
+    return response.ok
+  } catch (error) {
+    console.error('Could not reach Idleview:', error)
+    connectionError.value = true
+    return false
+  }
+}
+
+// Pair first, then load. The server would happily serve settings to an unpaired client
+// (reads are open), so this ordering - not the API - is what keeps them off the screen.
+const start = async () => {
+  isLoading.value = true
+  connectionError.value = false
+
+  const paired = await verifyStoredToken()
+  if (paired) {
+    await loadSettings()
+  } else {
+    isLoading.value = false
+  }
+}
+
+const retryConnection = () => start()
+
 onMounted(() => {
-  loadSettings()
+  // Open, like the other reads - and needed before the pickers can render a font name
+  // as anything but plain text.
+  loadFontCatalogue()
+  start()
   loadBackgroundPhoto()
 
   // Setup real-time updates via SSE
@@ -560,16 +655,41 @@ onBeforeUnmount(() => {
         </header>
 
         <div v-if="isLoading" class="loading-state">
-          <p>Loading settings...</p>
+          <p>Loading...</p>
         </div>
 
         <div v-else-if="connectionError" class="error-state">
           <p>⚠️ Cannot connect to Idleview app</p>
           <p class="error-details">Make sure the Idleview application is running on this computer.</p>
-          <button class="btn btn-primary" @click="loadSettings">
+          <button class="btn btn-primary" @click="retryConnection">
             Retry Connection
           </button>
         </div>
+
+        <!-- Until this panel is paired it shows nothing but the token prompt. The
+             settings below are not rendered, and never fetched. -->
+        <section v-else-if="needsToken" class="settings-group pairing-panel">
+          <h2 class="pairing-heading">Pair with your screen</h2>
+          <p class="pairing-copy">
+            Enter the control token to manage this display. Press <strong>T</strong> on the
+            Idleview screen to show it.
+          </p>
+          <form class="pairing-form" @submit.prevent="submitToken">
+            <input
+              v-model="tokenInput"
+              type="text"
+              class="number-input pairing-input"
+              placeholder="e.g. K7PMX2QD"
+              autocomplete="off"
+              spellcheck="false"
+              aria-label="Control token"
+            />
+            <button type="submit" class="btn btn-primary" :disabled="!tokenInput.trim()">
+              Pair
+            </button>
+          </form>
+          <p v-if="tokenError" class="setting-error">{{ tokenError }}</p>
+        </section>
 
         <main v-else>
           <!-- Units Section -->
@@ -627,6 +747,14 @@ onBeforeUnmount(() => {
             </h2>
             <div v-show="expandedSections.fonts" class="section-content">
 
+              <!-- Editing a screen in another room is otherwise guess-and-check. -->
+              <ScreenPreview
+                v-if="fontCatalogue?.fonts"
+                :display="settings"
+                :fonts="fontCatalogue.fonts"
+                :background-photo="backgroundPhoto"
+              />
+
               <!-- Clock subsection -->
               <div class="subsection">
                 <h3 @click="toggleSection('clockFonts')" @keydown="handleHeaderKeydown($event, 'clockFonts')" tabindex="0"
@@ -639,22 +767,13 @@ onBeforeUnmount(() => {
                   </svg>
                 </h3>
                 <div v-show="expandedSections.clockFonts" class="subsection-content section-content">
-                  <div class="setting-item">
-                    <label for="clock-font">Clock Font</label>
-                    <select id="clock-font" class="font-preview-select"
-                      v-model="settings.clockFont"
-                      :style="{ fontFamily: CLOCK_FONT_MAP[settings.clockFont] }">
-                      <option v-for="opt in clockFontOptions" :key="opt.value" :value="opt.value"
-                        :style="{ fontFamily: CLOCK_FONT_MAP[opt.value] }">
-                        {{ opt.label }}
-                      </option>
-                    </select>
-                  </div>
-                  <SelectInput label="Font Weight" v-model="settings.clockFontWeight" :options="fontWeightOptions" />
+                  <FontPicker label="Clock Font" v-model="settings.clockFont" :fonts="clockFonts" preview-text="12:45" />
+                  <SelectInput label="Font Weight" v-model="settings.clockFontWeight" :options="clockWeightOptions" />
                   <div class="setting-item number-setting">
                     <label for="clock-font-size">Clock Font Size</label>
                     <div class="number-input-wrapper">
-                      <input id="clock-font-size" v-model.number="settings.clockFontSize" type="number" min="120" max="260"
+                      <input id="clock-font-size" v-model.number="settings.clockFontSize" type="number"
+                        :min="CLOCK_FONT_SIZE_MIN" :max="CLOCK_FONT_SIZE_MAX"
                         step="1" class="number-input" :class="{ invalid: clockFontSizeError }" />
                       <p v-if="clockFontSizeError" class="setting-error">{{ clockFontSizeError }}</p>
                     </div>
@@ -674,18 +793,8 @@ onBeforeUnmount(() => {
                   </svg>
                 </h3>
                 <div v-show="expandedSections.weekdayFonts" class="subsection-content section-content">
-                  <div class="setting-item">
-                    <label for="weekday-font">Weekday Font</label>
-                    <select id="weekday-font" class="font-preview-select"
-                      v-model="settings.weekdayFont"
-                      :style="{ fontFamily: WEEKDAY_FONT_MAP[settings.weekdayFont] }">
-                      <option v-for="opt in weekdayFontOptions" :key="opt.value" :value="opt.value"
-                        :style="{ fontFamily: WEEKDAY_FONT_MAP[opt.value] }">
-                        {{ opt.label }}
-                      </option>
-                    </select>
-                  </div>
-                  <SelectInput label="Font Weight" v-model="settings.weekdayFontWeight" :options="fontWeightOptions" />
+                  <FontPicker label="Weekday Font" v-model="settings.weekdayFont" :fonts="weekdayFonts" preview-text="Friday" />
+                  <SelectInput label="Font Weight" v-model="settings.weekdayFontWeight" :options="weekdayWeightOptions" />
                   <div class="setting-item number-setting">
                     <label for="weekday-font-size">Weekday Font Size</label>
                     <div class="number-input-wrapper">
@@ -710,18 +819,8 @@ onBeforeUnmount(() => {
                   </svg>
                 </h3>
                 <div v-show="expandedSections.dateFonts" class="subsection-content section-content">
-                  <div class="setting-item">
-                    <label for="date-font">Date Font</label>
-                    <select id="date-font" class="font-preview-select"
-                      v-model="settings.dateFont"
-                      :style="{ fontFamily: DATE_FONT_MAP[settings.dateFont] }">
-                      <option v-for="opt in dateFontOptions" :key="opt.value" :value="opt.value"
-                        :style="{ fontFamily: DATE_FONT_MAP[opt.value] }">
-                        {{ opt.label }}
-                      </option>
-                    </select>
-                  </div>
-                  <SelectInput label="Font Weight" v-model="settings.dateFontWeight" :options="fontWeightOptions" />
+                  <FontPicker label="Date Font" v-model="settings.dateFont" :fonts="dateFonts" preview-text="14 Jul" />
+                  <SelectInput label="Font Weight" v-model="settings.dateFontWeight" :options="dateWeightOptions" />
                   <div class="setting-item number-setting">
                     <label for="date-font-size">Date Font Size</label>
                     <div class="number-input-wrapper">
@@ -764,6 +863,13 @@ onBeforeUnmount(() => {
               />
               <SelectInput label="Photo Refresh Interval" v-model="settings.photoInterval" :options="intervalOptions" />
               <SelectInput label="Photo Quality" v-model="settings.photoQuality" :options="qualityOptions" />
+
+              <div class="dev-actions">
+                <button class="btn btn-primary" @click="refreshPhoto" :disabled="isRefreshingPhoto">
+                  <img :src="RefreshIcon" alt="" class="btn-icon" />
+                  {{ isRefreshingPhoto ? 'Requesting…' : 'New Photo Now' }}
+                </button>
+              </div>
             </div>
           </section>
 
@@ -788,6 +894,14 @@ onBeforeUnmount(() => {
               </div>
             </div>
           </section>
+
+          <!-- Unpairing is a connection action, not a developer tool, so it sits on its
+               own rather than hidden inside the collapsed Developer section. -->
+          <div class="account-actions">
+            <button class="btn" @click="unpair">
+              Unpair This Device
+            </button>
+          </div>
 
           <div class="messages-container">
             <div v-for="msg in messages" :key="msg.id" :class="['status-message', msg.type]">
@@ -964,29 +1078,6 @@ header .subtitle {
   font-style: italic;
 }
 
-.font-preview-select {
-  padding: 0 1rem;
-  border: 2px solid #e0e0e0;
-  border-radius: 8px;
-  background-color: white;
-  font-size: 1.1rem;
-  cursor: pointer;
-  width: 200px;
-  height: 2.5rem;
-  box-sizing: border-box;
-  transition: border-color 0.3s;
-}
-
-.font-preview-select:hover {
-  border-color: #2196F3;
-}
-
-.font-preview-select:focus {
-  outline: none;
-  border-color: #2196F3;
-  box-shadow: 0 0 0 3px rgba(33, 150, 243, 0.1);
-}
-
 .subsection {
   margin: 0.75rem 0;
   border: 1px solid #e0e0e0;
@@ -1042,13 +1133,54 @@ header .subtitle {
   }
 }
 
+.pairing-panel {
+  border: 2px solid #f0a500;
+}
+
+.pairing-heading {
+  margin: 0 0 0.5rem;
+}
+
+.pairing-copy {
+  margin: 0 0 1rem;
+  color: #555;
+  font-size: 0.9rem;
+}
+
+.pairing-form {
+  display: flex;
+  gap: 0.75rem;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.pairing-input {
+  flex: 1;
+  min-width: 12rem;
+  font-family: monospace;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
 .dev-actions {
+  margin: 1.5rem 0;
+  display: flex;
+  justify-content: center;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.dev-actions .btn {
+  min-width: 200px;
+}
+
+.account-actions {
   margin: 1.5rem 0;
   display: flex;
   justify-content: center;
 }
 
-.dev-actions .btn {
+.account-actions .btn {
   min-width: 200px;
 }
 
