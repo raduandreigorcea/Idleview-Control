@@ -290,6 +290,20 @@ describe('my photos', () => {
     expect(thumb.options.headers['X-Idleview-Token']).toBe(VALID_TOKEN)
   })
 
+  it('offers Next photo once there is more than one, and asks the screen with the token', async () => {
+    const { wrapper: single } = await mountLocal(['0123456789abcdef'])
+    expect(single.text()).not.toContain('Next photo')
+
+    const { wrapper, calls } = await mountLocal(['0123456789abcdef', 'fedcba9876543210'])
+    const next = wrapper.findAll('button').find(b => b.text() === 'Next photo')
+    await next.trigger('click')
+    await flushPromises()
+
+    const request = calls.find(call => call.url === '/api/photos/next')
+    expect(request.options.method).toBe('POST')
+    expect(request.options.headers['X-Idleview-Token']).toBe(VALID_TOKEN)
+  })
+
   it('uploads each chosen file as-is, with the token', async () => {
     const { wrapper, calls } = await mountLocal([])
     const file = new File(['jpeg bytes'], 'beach.jpg', { type: 'image/jpeg' })

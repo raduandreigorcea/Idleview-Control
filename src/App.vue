@@ -280,6 +280,15 @@ const removePhoto = async (item) => {
   }
 }
 
+const nextPhoto = async () => {
+  try {
+    await authedFetch('/api/photos/next', { method: 'POST' })
+    notify('Showing the next photo')
+  } catch (error) {
+    if (error.message !== 'unauthorized') notify(error.message, 'error')
+  }
+}
+
 watch(() => settings.value?.photos.source, (source) => {
   if (source === 'local') loadLibrary()
 })
@@ -446,11 +455,16 @@ onBeforeUnmount(() => {
               <button type="button" class="remove" aria-label="Remove this photo" @click="removePhoto(item)">×</button>
             </figure>
           </div>
-          <label class="btn btn-primary add" :class="{ busy: uploading }">
-            {{ uploading || 'Add photos' }}
-            <input type="file" accept="image/jpeg,image/png,image/webp" multiple hidden
-              :disabled="!!uploading" @change="addPhotos" />
-          </label>
+          <div class="library-actions">
+            <button v-if="library.length > 1" type="button" class="btn next" @click="nextPhoto">
+              Next photo
+            </button>
+            <label class="btn btn-primary add" :class="{ busy: uploading }">
+              {{ uploading || 'Add photos' }}
+              <input type="file" accept="image/jpeg,image/png,image/webp" multiple hidden
+                :disabled="!!uploading" @change="addPhotos" />
+            </label>
+          </div>
         </div>
 
         <ChoiceInput label="New photo every" v-model="settings.photos.refresh_interval" :options="intervalOptions" />
@@ -626,9 +640,19 @@ h1 {
   cursor: pointer;
 }
 
-.add {
-  width: 100%;
+.library-actions {
+  display: flex;
+  gap: 0.75rem;
+}
+
+.library-actions .btn {
   box-sizing: border-box;
+  min-width: 0;
+}
+
+.next {
+  background: #eceff1;
+  color: #333;
 }
 
 .add.busy {
