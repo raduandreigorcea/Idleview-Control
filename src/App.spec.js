@@ -6,36 +6,16 @@ import App from './App.vue'
 // both are stubbed and the responses are scripted per test.
 const VALID_TOKEN = 'K7PMX2QD'
 
-const settingsPayload = {
+// The shape GET /api/settings returns.
+const settingsPayload = () => ({
   units: { temperature_unit: 'celsius', time_format: '24h', date_format: 'dmy', wind_speed_unit: 'kmh' },
   display: {
-    show_clock: true, show_date: true, show_weekday: true, show_temperature: true,
-    show_humidity_wind: true, show_precipitation_cloudiness: true, show_sunrise_sunset: true,
-    show_location: true, show_debug: false,
-    // Numeric weights, as the backend now stores them.
-    clock_font: 'roboto', clock_font_weight: 400, clock_font_size: 180,
-    weekday_font: 'great_vibes', weekday_font_weight: 400, weekday_font_size: 70,
-    date_font: 'kaushan_script', date_font_weight: 400, date_font_size: 40
+    show_clock: true, show_date: true, show_weekday: true, show_location: true,
+    show_temperature: true, show_sunrise_sunset: true,
+    show_precipitation_cloudiness: true, show_humidity_wind: true
   },
-  photos: { refresh_interval: 30, photo_quality: 80, enable_festive_queries: true, custom_query: '' }
-}
-
-// Mirrors the shape of GET /api/fonts. Arimo genuinely has no weight below 400 and
-// Kaushan Script has only 400 - that is the whole point of serving the catalogue.
-const fontsPayload = {
-  fonts: [
-    { id: 'roboto', label: 'Roboto', family: 'Roboto', stack: "'Roboto', sans-serif", category: 'sans', weights: [100, 300, 400, 500, 700, 900] },
-    { id: 'arimo', label: 'Arimo', family: 'Arimo', stack: "'Arimo', sans-serif", category: 'sans', weights: [400, 500, 600, 700] },
-    { id: 'great_vibes', label: 'Great Vibes', family: 'Great Vibes', stack: "'Great Vibes', cursive", category: 'script', weights: [400] },
-    { id: 'kaushan_script', label: 'Kaushan Script', family: 'Kaushan Script', stack: "'Kaushan Script', cursive", category: 'script', weights: [400] }
-  ],
-  clock: ['roboto', 'arimo'],
-  weekday: ['great_vibes', 'kaushan_script'],
-  date: ['roboto', 'arimo', 'great_vibes', 'kaushan_script'],
-  stylesheet: 'https://fonts.googleapis.com/css2?family=Roboto:wght@100;300;400;500;700;900&display=swap',
-  clock_size: [120, 260],
-  secondary_size: [40, 200]
-}
+  photos: { refresh_interval: 30, enable_festive_queries: true }
+})
 
 function installFetchStub() {
   const calls = []
@@ -49,11 +29,8 @@ function installFetchStub() {
         ? { ok: true, status: 200, json: async () => ({ ok: true }) }
         : { ok: false, status: 401, json: async () => ({ error: 'Missing or invalid control token' }) }
     }
-    if (url.includes('/api/fonts')) {
-      return { ok: true, status: 200, json: async () => fontsPayload }
-    }
     if (url.includes('/api/settings')) {
-      return { ok: true, status: 200, json: async () => settingsPayload }
+      return { ok: true, status: 200, json: async () => settingsPayload() }
     }
     if (url.includes('/api/photo/current')) {
       return { ok: true, status: 200, json: async () => null }
@@ -94,8 +71,7 @@ describe('pairing gate', () => {
 
     // The whole settings surface must be absent, not merely hidden.
     expect(wrapper.find('main').exists()).toBe(false)
-    expect(wrapper.text()).not.toContain('Temperature Unit')
-    expect(wrapper.text()).not.toContain('Photo Quality')
+    expect(wrapper.text()).not.toContain('Temperature')
   })
 
   it('never asks the user for an Unsplash key', async () => {
@@ -144,7 +120,7 @@ describe('pairing gate', () => {
     await flushPromises()
 
     expect(wrapper.find('main').exists()).toBe(true)
-    expect(wrapper.text()).toContain('Temperature Unit')
+    expect(wrapper.text()).toContain('Temperature')
     expect(wrapper.find('.pairing-form').exists()).toBe(false)
     expect(localStorage.getItem('idleviewControlToken')).toBe(VALID_TOKEN)
   })
@@ -186,59 +162,6 @@ describe('pairing gate', () => {
   })
 })
 
-describe('fonts come from the catalogue', () => {
-  it('offers only the weights the selected font actually has', async () => {
-    const { wrapper } = await mountPaired()
-
-    // Roboto publishes six weights.
-    expect(wrapper.vm.clockWeightOptions.map(o => o.value))
-      .toEqual(['100', '300', '400', '500', '700', '900'])
-
-    // Arimo has nothing below 400 - the old UI offered it "Thin" anyway.
-    wrapper.vm.settings.clockFont = 'arimo'
-    await flushPromises()
-    expect(wrapper.vm.clockWeightOptions.map(o => o.value)).toEqual(['400', '500', '600', '700'])
-    expect(wrapper.vm.clockWeightOptions.some(o => o.label.includes('Thin'))).toBe(false)
-
-    // A script face with a single weight collapses to one option rather than
-    // pretending to offer six.
-    expect(wrapper.vm.weekdayWeightOptions.map(o => o.value)).toEqual(['400'])
-  })
-
-  it('snaps a stranded weight when the font changes', async () => {
-    const { wrapper } = await mountPaired()
-
-    wrapper.vm.settings.clockFontWeight = '100'
-    await flushPromises()
-
-    // Arimo has no 100. Rather than silently synthesising it, the control moves to the
-    // nearest weight the face really ships.
-    wrapper.vm.settings.clockFont = 'arimo'
-    await flushPromises()
-
-    expect(wrapper.vm.settings.clockFontWeight).toBe('400')
-  })
-
-  it('never offers a font the screen would not render', async () => {
-    const { wrapper } = await mountPaired()
-
-    const clockIds = wrapper.vm.clockFonts.map(f => f.id)
-    // google_sans is not on Google Fonts at all; it used to be in this list.
-    expect(clockIds).not.toContain('google_sans')
-    // The clock takes sans faces only - a 180px script clock is unreadable.
-    expect(clockIds).not.toContain('great_vibes')
-    expect(wrapper.vm.weekdayFonts.every(f => f.category === 'script')).toBe(true)
-  })
-
-  it('takes its size bounds from the backend, not a local copy', async () => {
-    const { wrapper } = await mountPaired()
-
-    // The dashboard used to cap weekday/date at 120 while this panel accepted 200.
-    expect(wrapper.vm.SECONDARY_FONT_SIZE_MAX).toBe(200)
-    expect(wrapper.vm.CLOCK_FONT_SIZE_MAX).toBe(260)
-  })
-})
-
 describe('writes carry the token', () => {
   it('sends the token and a client id on save', async () => {
     localStorage.setItem('idleviewControlToken', VALID_TOKEN)
@@ -249,7 +172,7 @@ describe('writes carry the token', () => {
 
     // Toggling any setting queues the single debounced writer.
     vi.useFakeTimers()
-    wrapper.vm.settings.showClock = false
+    wrapper.vm.settings.display.show_clock = false
     await flushPromises()
     vi.advanceTimersByTime(400)
     vi.useRealTimers()
@@ -260,14 +183,36 @@ describe('writes carry the token', () => {
     expect(write.options.headers['X-Idleview-Token']).toBe(VALID_TOKEN)
     expect(write.options.headers['X-Idleview-Client']).toMatch(/^panel-/)
 
-    // One writer: the custom query rides along in the same request rather than a
-    // second, racing one.
+    // The body is the settings as the backend shapes them, with the change applied.
     const body = JSON.parse(write.options.body)
-    expect(body.photos).toHaveProperty('custom_query')
-    expect(typeof body.photos.photo_quality).toBe('number')
+    expect(body.display.show_clock).toBe(false)
+    expect(body.photos.refresh_interval).toBe(30)
+  })
 
-    // Weights go over the wire as numbers now, not "thin"/"regular"/"medium".
-    expect(typeof body.display.clock_font_weight).toBe('number')
-    expect(body.display.clock_font_weight).toBe(400)
+  it('does not save the state it just loaded', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    const { calls } = await mountPaired()
+    vi.advanceTimersByTime(1000)
+    vi.useRealTimers()
+    await flushPromises()
+
+    expect(calls.some(call => call.options?.method === 'PATCH')).toBe(false)
+  })
+})
+
+describe('choices', () => {
+  it('saves the option that was tapped', async () => {
+    const { wrapper, calls } = await mountPaired()
+
+    vi.useFakeTimers()
+    const twelveHour = wrapper.findAll('button[role="radio"]').find(b => b.text() === '2:30 PM')
+    await twelveHour.trigger('click')
+    vi.advanceTimersByTime(400)
+    vi.useRealTimers()
+    await flushPromises()
+
+    expect(twelveHour.attributes('aria-checked')).toBe('true')
+    const body = JSON.parse(calls.find(call => call.options?.method === 'PATCH').options.body)
+    expect(body.units.time_format).toBe('12h')
   })
 })
