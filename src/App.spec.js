@@ -307,3 +307,51 @@ describe('my photos', () => {
     expect(wrapper.find('.notice').text()).toContain('Photo added')
   })
 })
+
+describe('confirmation dialog', () => {
+  // jsdom has <dialog> but not its modal methods.
+  beforeEach(() => {
+    HTMLDialogElement.prototype.showModal = function () { this.open = true }
+    HTMLDialogElement.prototype.close = function () { this.open = false; this.dispatchEvent(new Event('close')) }
+  })
+
+  it('removes a photo only after Remove is pressed in the styled dialog', async () => {
+    localStorage.setItem('idleviewControlToken', VALID_TOKEN)
+    globalThis.URL.createObjectURL = vi.fn(() => 'blob:thumb')
+    globalThis.URL.revokeObjectURL = vi.fn()
+    const calls = []
+    globalThis.fetch = vi.fn(async (url, options = {}) => {
+      calls.push({ url, options })
+      if (url.includes('/api/auth/check')) return { ok: true, status: 200, json: async () => ({ ok: true }) }
+      if (url.includes('/api/settings')) {
+        const settings = settingsPayload()
+        settings.photos.source = 'local'
+        return { ok: true, status: 200, json: async () => settings }
+      }
+      if (url.endsWith('/thumb')) return { ok: true, status: 200, blob: async () => new Blob(['x']) }
+      if (url === '/api/photos') return { ok: true, status: 200, json: async () => ['0123456789abcdef'] }
+      return { ok: true, status: 200, json: async () => ({ ok: true }) }
+    })
+    const wrapper = mount(App, { attachTo: document.body })
+    await flushPromises()
+    const deletes = () => calls.filter(call => call.options.method === 'DELETE')
+
+    // Cancel: nothing is deleted.
+    await wrapper.find('.remove').trigger('click')
+    const dialog = wrapper.find('dialog.confirm')
+    expect(dialog.element.open).toBe(true)
+    expect(dialog.text()).toContain('Remove this photo')
+    expect(dialog.find('img').attributes('src')).toBe('blob:thumb')
+    await dialog.findAll('button').find(b => b.text() === 'Cancel').trigger('click')
+    await flushPromises()
+    expect(dialog.element.open).toBe(false)
+    expect(deletes()).toHaveLength(0)
+
+    // Remove: exactly one delete, of that photo.
+    await wrapper.find('.remove').trigger('click')
+    await dialog.findAll('button').find(b => b.text() === 'Remove').trigger('click')
+    await flushPromises()
+    expect(deletes().map(call => call.url)).toEqual(['/api/photos/0123456789abcdef'])
+    wrapper.unmount()
+  })
+})

@@ -40,6 +40,26 @@ const backgroundRef = ref(null)
 const library = ref([])
 const uploading = ref('')
 
+// The confirmation dialog. A native <dialog> rather than confirm(), which cannot be
+// styled: showModal() still gives focus trapping, Escape to cancel and a backdrop.
+const dialogRef = ref(null)
+const dialog = ref({ text: '', action: '', image: '' })
+let resolveDialog = null
+
+const confirmWith = (text, action, image = '') => new Promise(resolve => {
+  dialog.value = { text, action, image }
+  resolveDialog = resolve
+  dialogRef.value.showModal()
+})
+
+// Every way out - the buttons, Escape, a tap on the backdrop - lands here once.
+const answer = (value) => {
+  const resolve = resolveDialog
+  resolveDialog = null
+  if (dialogRef.value?.open) dialogRef.value.close()
+  resolve?.(value)
+}
+
 let applyingServerState = false
 let saveTimer = null
 let noticeTimer = null
@@ -191,7 +211,7 @@ watch(settings, () => {
 }, { deep: true })
 
 const resetSettings = async () => {
-  if (!confirm('Put every setting back to its default?')) return
+  if (!(await confirmWith('Put every setting back to its default?', 'Reset'))) return
   try {
     await authedFetch('/api/settings/reset', { method: 'POST' })
     await loadSettings()
@@ -248,8 +268,9 @@ const addPhotos = async (event) => {
   if (added) notify(added === 1 ? 'Photo added' : `${added} photos added`)
 }
 
-const removePhoto = async (id) => {
-  if (!confirm('Remove this photo?')) return
+const removePhoto = async (item) => {
+  if (!(await confirmWith('Remove this photo from the screen?', 'Remove', item.thumb))) return
+  const id = item.id
   try {
     await authedFetch(`/api/photos/${id}`, { method: 'DELETE' })
     await loadLibrary()
@@ -422,7 +443,7 @@ onBeforeUnmount(() => {
           <div v-else class="grid">
             <figure v-for="item in library" :key="item.id">
               <img :src="item.thumb" alt="" />
-              <button type="button" class="remove" aria-label="Remove this photo" @click="removePhoto(item.id)">×</button>
+              <button type="button" class="remove" aria-label="Remove this photo" @click="removePhoto(item)">×</button>
             </figure>
           </div>
           <label class="btn btn-primary add" :class="{ busy: uploading }">
@@ -454,6 +475,14 @@ onBeforeUnmount(() => {
   <div class="notice" :class="notice?.kind" role="status" aria-live="polite" v-show="notice">
     {{ notice?.text }}
   </div>
+  <dialog ref="dialogRef" class="confirm" @close="answer(false)" @click.self="answer(false)">
+    <img v-if="dialog.image" :src="dialog.image" alt="" class="confirm-image" />
+    <p>{{ dialog.text }}</p>
+    <div class="confirm-actions">
+      <button type="button" class="btn" @click="answer(false)">Cancel</button>
+      <button type="button" class="btn btn-danger" @click="answer(true)">{{ dialog.action }}</button>
+    </div>
+  </dialog>
 </template>
 
 <style scoped>
@@ -496,6 +525,60 @@ h1 {
 .notice.error {
   background: #b71c1c;
   border-radius: 12px;
+}
+
+.confirm {
+  border: none;
+  border-radius: 16px;
+  padding: 1.25rem;
+  width: min(22rem, calc(100vw - 2rem));
+  box-sizing: border-box;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.35);
+  text-align: center;
+  color: #2c3e50;
+}
+
+.confirm::backdrop {
+  background: rgba(10, 20, 30, 0.55);
+  backdrop-filter: blur(3px);
+}
+
+.confirm[open] {
+  animation: pop 0.15s ease-out;
+}
+
+@keyframes pop {
+  from { opacity: 0; transform: scale(0.96); }
+  to { opacity: 1; transform: scale(1); }
+}
+
+.confirm-image {
+  width: 100%;
+  max-height: 12rem;
+  object-fit: cover;
+  border-radius: 10px;
+}
+
+.confirm p {
+  font-size: 1.05rem;
+  font-weight: 500;
+  margin: 0.75rem 0 1.25rem;
+}
+
+.confirm-actions {
+  display: flex;
+  gap: 0.75rem;
+}
+
+.confirm-actions .btn {
+  flex: 1;
+  min-width: 0;
+  min-height: 44px;
+}
+
+.confirm-actions .btn:not(.btn-danger) {
+  background: #eceff1;
+  color: #333;
 }
 
 .library {
