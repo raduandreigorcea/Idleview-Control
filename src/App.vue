@@ -1,36 +1,21 @@
 <script setup>
-import { ref, computed, onMounted, onBeforeUnmount, watch, nextTick } from 'vue'
-import SelectInput from './components/SelectInput.vue'
+import { ref, onMounted, onBeforeUnmount, watch, nextTick } from 'vue'
+import ChoiceInput from './components/ChoiceInput.vue'
 import ToggleSwitch from './components/ToggleSwitch.vue'
-import FontPicker from './components/FontPicker.vue'
-import ScreenPreview from './components/ScreenPreview.vue'
-import RulerIcon from './assets/ruler-dimension-line.svg'
-import MonitorIcon from './assets/monitor-cog.svg'
-import ImageIcon from './assets/image.svg'
-import SettingsIcon from './assets/settings.svg'
-import ResetIcon from './assets/book-marked.svg'
-import BracesIcon from './assets/braces.svg'
-import TypeIcon from './assets/type-outline.svg'
-import RefreshIcon from './assets/refresh-ccw.svg'
 
+// Relative URLs: in production the panel is served by the Idleview app itself; in
+// development the Vite proxy in vite.config.js forwards /api to the app on port 8737.
 
-// Relative URLs throughout. In production the panel is served by the Idleview app
-// itself, so it is already same-origin; in development the Vite proxy in
-// vite.config.js forwards /api to the app on port 8737.
-const API_BASE = ''
-
-// Writes require the control token shown on the Idleview screen (press T there).
-// Reads are open, so the panel can render before it is paired.
+// Writes require the control token shown on the Idleview screen. Reads are open, but
+// an unpaired panel shows nothing but the pairing prompt.
 const TOKEN_KEY = 'idleviewControlToken'
 const token = ref(localStorage.getItem(TOKEN_KEY) || '')
 const tokenInput = ref('')
 const needsToken = ref(false)
 const tokenError = ref('')
 
-// Identifies this panel so the server can label the broadcast it triggers, letting us
-// skip our own echo. The old code muted ALL settings events for a second after any
-// save, which silently dropped a second panel's legitimate change if it landed inside
-// that window.
+// Identifies this panel, so it can skip the broadcast of its own change instead of
+// reloading in a loop - while still picking up another panel's.
 const clientId = (() => {
   const existing = sessionStorage.getItem('idleviewClientId')
   if (existing) return existing
@@ -39,1187 +24,782 @@ const clientId = (() => {
   return fresh
 })()
 
-const authHeaders = () => ({
-  'Content-Type': 'application/json',
-  'X-Idleview-Token': token.value,
-  'X-Idleview-Client': clientId
-})
+// The same shape the backend stores, so saving is just sending it back.
+const settings = ref(null)
 
-const settings = ref({
-  tempUnit: 'celsius',
-  timeFormat: '24h',
-  dateFormat: 'dmy',
-  windUnit: 'kmh',
-  clockFont: 'roboto',
-  clockFontWeight: '400',
-  clockFontSize: 180,
-  weekdayFont: 'great_vibes',
-  weekdayFontWeight: '400',
-  weekdayFontSize: 70,
-  dateFont: 'kaushan_script',
-  dateFontWeight: '400',
-  dateFontSize: 40,
-  showClock: true,
-  showDate: true,
-  showWeekday: true,
-  showTemperature: true,
-  showHumidityWind: true,
-  showPrecipitation: true,
-  showSunriseSunset: true,
-  showLocation: true,
-  showDebug: false,
-  festivePhotos: true,
-  photoInterval: '30',
-  photoQuality: '80'
-})
-
-const messages = ref([])
 const isLoading = ref(true)
 const connectionError = ref(false)
-const backgroundPhoto = ref('')
-const bgImageRef = ref(null)
-const photoCredits = ref(null)
-const customQuery = ref('')
+// The bar pinned to the bottom of the screen, so it is seen wherever the page is
+// scrolled: { text, kind: 'ok' | 'error' }.
+const notice = ref(null)
+const photo = ref(null)
+const backgroundRef = ref(null)
 
-const isRefreshingPhoto = ref(false)
+// The user's own photos: [{ id, thumb }], thumb being a blob URL (the thumbnails need
+// the token, so they cannot be plain <img src> URLs).
+const library = ref([])
+const uploading = ref('')
 
-let messageIdCounter = 0
-let isApplyingServerState = false
-let saveDebounceTimer = null
-
-// Track expanded sections - load from localStorage or default to collapsed
-const loadExpandedSections = () => {
-  const defaults = { units: false, display: false, fonts: false, clockFonts: false, weekdayFonts: false, dateFonts: false, photos: false, dev: false }
-  const stored = localStorage.getItem('expandedSections')
-  if (stored) {
-    try {
-      return { ...defaults, ...JSON.parse(stored) }
-    } catch (e) {
-      console.error('Error parsing stored sections:', e)
-    }
+// Which sections are open, remembered per browser. Same key the panel used before, so
+// a saved preference carries over. Missing sections start open.
+const SECTIONS_KEY = 'expandedSections'
+const openSections = ref((() => {
+  try {
+    return JSON.parse(localStorage.getItem(SECTIONS_KEY)) || {}
+  } catch {
+    return {}
   }
-  return defaults
-}
-
-const expandedSections = ref(loadExpandedSections())
-
-const toggleSection = (section) => {
-  expandedSections.value[section] = !expandedSections.value[section]
-  // Persist to localStorage
-  localStorage.setItem('expandedSections', JSON.stringify(expandedSections.value))
-}
-
-// Keyboard handler for collapsible headers
-const handleHeaderKeydown = (event, section) => {
-  if (event.key === 'Enter' || event.key === ' ') {
-    event.preventDefault()
-    toggleSection(section)
+})())
+const isOpen = (key) => openSections.value[key] !== false
+const rememberSection = (key, event) => {
+  openSections.value = { ...openSections.value, [key]: event.target.open }
+  try {
+    localStorage.setItem(SECTIONS_KEY, JSON.stringify(openSections.value))
+  } catch {
+    // Private mode or storage blocked: the section still opens and closes.
   }
 }
 
-// Helper to show notification
-const showMessage = (text, type = 'success') => {
-  const id = messageIdCounter++
-  messages.value.unshift({ id, text, type })
-  setTimeout(() => {
-    messages.value = messages.value.filter(m => m.id !== id)
-  }, 5000)
+// The confirmation dialog. A native <dialog> rather than confirm(), which cannot be
+// styled: showModal() still gives focus trapping, Escape to cancel and a backdrop.
+const dialogRef = ref(null)
+const dialog = ref({ text: '', action: '', image: '' })
+let resolveDialog = null
+
+const confirmWith = (text, action, image = '') => new Promise(resolve => {
+  dialog.value = { text, action, image }
+  resolveDialog = resolve
+  dialogRef.value.showModal()
+})
+
+// Every way out - the buttons, Escape, a tap on the backdrop - lands here once.
+const answer = (value) => {
+  const resolve = resolveDialog
+  resolveDialog = null
+  if (dialogRef.value?.open) dialogRef.value.close()
+  resolve?.(value)
 }
 
-// Options for selects
-const tempOptions = [
-  { value: 'celsius', label: 'Celsius (°C)' },
-  { value: 'fahrenheit', label: 'Fahrenheit (°F)' }
+let applyingServerState = false
+let saveTimer = null
+let noticeTimer = null
+let backgroundBlobUrl = null
+
+const temperatureOptions = [
+  { value: 'celsius', label: '°C' },
+  { value: 'fahrenheit', label: '°F' }
 ]
-
 const timeOptions = [
-  { value: '24h', label: '24-hour' },
-  { value: '12h', label: '12-hour (AM/PM)' }
+  { value: '24h', label: '14:30' },
+  { value: '12h', label: '2:30 PM' }
 ]
-
+// Shown as examples of what the screen will print, not as DD/MM/YYYY codes.
 const dateOptions = [
-  { value: 'dmy', label: 'DD/MM/YYYY' },
-  { value: 'mdy', label: 'MM/DD/YYYY' },
-  { value: 'ymd', label: 'YYYY/MM/DD' }
+  { value: 'dmy', label: '26 Apr' },
+  { value: 'mdy', label: 'Apr 26' },
+  { value: 'ymd', label: '2026 Apr' }
 ]
-
 const windOptions = [
   { value: 'kmh', label: 'km/h' },
   { value: 'mph', label: 'mph' },
   { value: 'ms', label: 'm/s' }
 ]
-
-// ===== Fonts =====
-//
-// The catalogue comes from the backend (GET /api/fonts). This file used to carry its
-// own font lists, CSS stacks and weight names, and so did the dashboard, and so did two
-// hand-written Google Fonts <link> tags. They disagreed: "Google Sans" was offered and
-// is not on Google Fonts at all, "Space Grotesk" was a fallback nobody loaded, and every
-// font offered "Thin" (200) including Arimo, which publishes nothing below 400.
-//
-// Now there is one list, the stylesheet is generated from it, and the weights on offer
-// are the ones the chosen font actually has.
-const fontCatalogue = ref(null)
-
-const fontsFor = (role) => {
-  const catalogue = fontCatalogue.value
-  if (!catalogue?.fonts || !Array.isArray(catalogue[role])) return []
-  return catalogue[role].map(id => catalogue.fonts.find(font => font.id === id)).filter(Boolean)
-}
-
-const clockFonts = computed(() => fontsFor('clock'))
-const weekdayFonts = computed(() => fontsFor('weekday'))
-const dateFonts = computed(() => fontsFor('date'))
-
-const WEIGHT_LABELS = {
-  100: 'Thin',
-  200: 'Extra Light',
-  300: 'Light',
-  400: 'Regular',
-  500: 'Medium',
-  600: 'Semi Bold',
-  700: 'Bold',
-  800: 'Extra Bold',
-  900: 'Black'
-}
-
-// Only the weights the selected font really ships. A face with a single weight (most of
-// the script fonts) collapses to one option instead of pretending to offer six.
-const weightOptionsFor = (fontId) => {
-  const font = fontCatalogue.value?.fonts.find(f => f.id === fontId)
-  if (!font) return []
-  return font.weights.map(weight => ({
-    value: String(weight),
-    label: `${WEIGHT_LABELS[weight] || weight} (${weight})`
-  }))
-}
-
-const clockWeightOptions = computed(() => weightOptionsFor(settings.value.clockFont))
-const weekdayWeightOptions = computed(() => weightOptionsFor(settings.value.weekdayFont))
-const dateWeightOptions = computed(() => weightOptionsFor(settings.value.dateFont))
-
-// Changing font can strand a weight the new face does not have. The backend would snap
-// it anyway, but doing it here keeps the control showing what will actually be saved.
-const snapWeight = (fontId, current) => {
-  const font = fontCatalogue.value?.fonts.find(f => f.id === fontId)
-  if (!font || font.weights.includes(Number(current))) return String(current)
-  const nearest = font.weights.reduce((best, weight) =>
-    Math.abs(weight - Number(current)) < Math.abs(best - Number(current)) ? weight : best
-  )
-  return String(nearest)
-}
-
-watch(() => settings.value.clockFont, (id) => {
-  settings.value.clockFontWeight = snapWeight(id, settings.value.clockFontWeight)
-})
-watch(() => settings.value.weekdayFont, (id) => {
-  settings.value.weekdayFontWeight = snapWeight(id, settings.value.weekdayFontWeight)
-})
-watch(() => settings.value.dateFont, (id) => {
-  settings.value.dateFontWeight = snapWeight(id, settings.value.dateFontWeight)
-})
-
-// Size bounds also come from the backend, so the panel, the screen and the validator
-// cannot disagree about them the way they used to (the dashboard capped the weekday and
-// date sizes at 120 while this panel happily accepted 200).
-const CLOCK_FONT_SIZE_MIN = computed(() => fontCatalogue.value?.clock_size[0] ?? 120)
-const CLOCK_FONT_SIZE_MAX = computed(() => fontCatalogue.value?.clock_size[1] ?? 260)
-const SECONDARY_FONT_SIZE_MIN = computed(() => fontCatalogue.value?.secondary_size[0] ?? 40)
-const SECONDARY_FONT_SIZE_MAX = computed(() => fontCatalogue.value?.secondary_size[1] ?? 200)
-
-const loadFontCatalogue = async () => {
-  try {
-    const response = await fetch(`${API_BASE}/api/fonts`)
-    if (!response.ok) throw new Error('Failed to fetch the font catalogue')
-    fontCatalogue.value = await response.json()
-
-    // Request exactly the fonts and weights the catalogue declares.
-    const link = document.createElement('link')
-    link.rel = 'stylesheet'
-    link.href = fontCatalogue.value.stylesheet
-    document.head.appendChild(link)
-  } catch (error) {
-    console.error('Error loading the font catalogue:', error)
-  }
-}
-
-const sizeError = (label, value, min, max) => {
-  if (!Number.isFinite(value) || value < min || value > max) {
-    return `${label} must be between ${min} and ${max}.`
-  }
-  return ''
-}
-
-const clockFontSizeError = computed(() => sizeError(
-  'Clock Font Size', settings.value.clockFontSize,
-  CLOCK_FONT_SIZE_MIN.value, CLOCK_FONT_SIZE_MAX.value
-))
-
-const weekdayFontSizeError = computed(() => sizeError(
-  'Weekday Font Size', settings.value.weekdayFontSize,
-  SECONDARY_FONT_SIZE_MIN.value, SECONDARY_FONT_SIZE_MAX.value
-))
-
-const dateFontSizeError = computed(() => sizeError(
-  'Date Font Size', settings.value.dateFontSize,
-  SECONDARY_FONT_SIZE_MIN.value, SECONDARY_FONT_SIZE_MAX.value
-))
-
+const sourceOptions = [
+  { value: 'unsplash', label: 'Unsplash' },
+  { value: 'local', label: 'My photos' }
+]
 const intervalOptions = [
-  { value: '15', label: '15 minutes' },
-  { value: '30', label: '30 minutes' },
-  { value: '60', label: '1 hour' },
-  { value: '120', label: '2 hours' }
+  { value: 15, label: '15 min' },
+  { value: 30, label: '30 min' },
+  { value: 60, label: '1 h' },
+  { value: 120, label: '2 h' }
 ]
 
-const qualityOptions = [
-  { value: '65', label: 'Low (65%)' },
-  { value: '80', label: 'High (80%)' },
-  { value: '100', label: 'Maximum (100%)' }
+const showToggles = [
+  { key: 'show_clock', label: 'Clock' },
+  { key: 'show_weekday', label: 'Day of the week' },
+  { key: 'show_date', label: 'Date' },
+  { key: 'show_location', label: 'Location' },
+  { key: 'show_temperature', label: 'Temperature' },
+  { key: 'show_sunrise_sunset', label: 'Sunrise and sunset' },
+  { key: 'show_precipitation_cloudiness', label: 'Rain and clouds' },
+  { key: 'show_humidity_wind', label: 'Humidity and wind' }
 ]
 
-// Load settings from Idleview server.
-//
-// The `??` fallbacks below default to TRUE, matching Settings::default() in Rust. They
-// used to default to false, so any field the server omitted would have silently blanked
-// that element on the screen while the backend believed it was showing it.
-const loadSettings = async (silent = false) => {
+const notify = (text, kind = 'ok') => {
+  notice.value = { text, kind }
+  clearTimeout(noticeTimer)
+  noticeTimer = setTimeout(() => { notice.value = null }, kind === 'error' ? 6000 : 2500)
+}
+
+const loadSettings = async () => {
   try {
-    if (!silent) isLoading.value = true
-    isApplyingServerState = true
     connectionError.value = false
+    const response = await fetch('/api/settings')
+    if (!response.ok) throw new Error(`Failed to fetch settings: ${response.status}`)
 
-    const response = await fetch(`${API_BASE}/api/settings`)
-    if (!response.ok) throw new Error('Failed to fetch settings')
-
-    const data = await response.json()
-
-    settings.value = {
-      tempUnit: data.units?.temperature_unit || 'celsius',
-      timeFormat: data.units?.time_format || '24h',
-      dateFormat: data.units?.date_format || 'dmy',
-      windUnit: data.units?.wind_speed_unit || 'kmh',
-      // No normalize* here any more: the backend validates every font id and weight
-      // against the catalogue before it stores them, so what it hands back is already
-      // a font this role can use at a weight that font actually has.
-      clockFont: data.display?.clock_font ?? 'roboto',
-      clockFontWeight: String(data.display?.clock_font_weight ?? 400),
-      clockFontSize: Number(data.display?.clock_font_size ?? 180),
-      weekdayFont: data.display?.weekday_font ?? 'great_vibes',
-      weekdayFontWeight: String(data.display?.weekday_font_weight ?? 400),
-      weekdayFontSize: Number(data.display?.weekday_font_size ?? 70),
-      dateFont: data.display?.date_font ?? 'kaushan_script',
-      dateFontWeight: String(data.display?.date_font_weight ?? 400),
-      dateFontSize: Number(data.display?.date_font_size ?? 40),
-      showClock: data.display?.show_clock ?? true,
-      showDate: data.display?.show_date ?? true,
-      showWeekday: data.display?.show_weekday ?? true,
-      showTemperature: data.display?.show_temperature ?? true,
-      showHumidityWind: data.display?.show_humidity_wind ?? true,
-      showPrecipitation: data.display?.show_precipitation_cloudiness ?? true,
-      showSunriseSunset: data.display?.show_sunrise_sunset ?? true,
-      showLocation: data.display?.show_location ?? true,
-      showDebug: data.display?.show_debug ?? false,
-      festivePhotos: data.photos?.enable_festive_queries ?? true,
-      photoInterval: String(data.photos?.refresh_interval ?? 30),
-      photoQuality: String(data.photos?.photo_quality ?? 80)
-    }
-    customQuery.value = data.photos?.custom_query ?? ''
-
-    // Let the watcher see the new values land before it is allowed to fire again,
-    // otherwise applying server state would immediately queue a save of that state.
+    applyingServerState = true
+    settings.value = await response.json()
+    // Let the watcher see the new values land before it may fire again, otherwise
+    // applying server state would immediately queue a save of that same state.
     await nextTick()
   } catch (error) {
     console.error('Error loading settings:', error)
     connectionError.value = true
   } finally {
-    isApplyingServerState = false
+    applyingServerState = false
     isLoading.value = false
   }
 }
 
-// Load background photo
-const loadBackgroundPhoto = async () => {
+const loadPhoto = async () => {
   try {
-    const response = await fetch(`${API_BASE}/api/photo/current?t=${Date.now()}`)
+    const response = await fetch('/api/photo/current')
     if (!response.ok) return
+    const current = await response.json()
+    if (!current?.url) {
+      photo.value = null
+      if (backgroundRef.value) backgroundRef.value.style.backgroundImage = ''
+      return
+    }
 
-    const photoData = await response.json()
-    if (!photoData?.url) return
+    // One of the user's own photos is served by this server behind the token.
+    let url = current.url
+    if (url.startsWith('/api/')) {
+      if (!token.value) return
+      const blob = await (await authedFetch(url)).blob()
+      if (backgroundBlobUrl) URL.revokeObjectURL(backgroundBlobUrl)
+      url = backgroundBlobUrl = URL.createObjectURL(blob)
+    }
 
-    const imageUrl = photoData.url.includes('?')
-      ? `${photoData.url}&t=${Date.now()}`
-      : `${photoData.url}?t=${Date.now()}`
-
-    // Preload the image before swapping — avoids any background flash
+    // Preload before swapping, so the background never flashes blank.
     const img = new Image()
     img.onload = () => {
-      backgroundPhoto.value = imageUrl
-      photoCredits.value = { author: photoData.author, authorUrl: photoData.author_url }
+      photo.value = current
+      if (backgroundRef.value) backgroundRef.value.style.backgroundImage = `url("${url}")`
     }
-    img.src = imageUrl
+    img.src = url
   } catch (error) {
-    console.error('Error loading background photo:', error)
+    console.error('Error loading the current photo:', error)
   }
 }
 
-// Send a write, surfacing a rejected token as a prompt to re-pair rather than a
-// generic failure.
+// A rejected token sends the user back to pairing rather than showing a vague error.
 const authedFetch = async (path, options = {}) => {
-  const response = await fetch(`${API_BASE}${path}`, {
+  const response = await fetch(path, {
     ...options,
-    headers: { ...authHeaders(), ...(options.headers || {}) }
+    headers: {
+      'Content-Type': 'application/json',
+      'X-Idleview-Token': token.value,
+      'X-Idleview-Client': clientId,
+      ...options.headers
+    }
   })
 
   if (response.status === 401) {
     needsToken.value = true
-    tokenError.value = token.value
-      ? 'That token was rejected. Check the one shown on the Idleview screen.'
-      : ''
+    tokenError.value = 'That token was rejected. Check the one shown on the Idleview screen.'
     throw new Error('unauthorized')
   }
-
-  if (!response.ok) throw new Error(`Request failed: ${response.status}`)
+  if (response.status === 413) throw new Error('That photo is too large (30 MB at most).')
+  if (!response.ok) {
+    // The server explains itself ("not an image", "library is full") - show that.
+    const body = await response.json().catch(() => null)
+    throw new Error(body?.error || `Request failed: ${response.status}`)
+  }
   return response
 }
 
-// One writer, one request shape.
-//
-// Settings used to be saved by a full-replace PUT while the custom query went through a
-// merge PATCH, each on its own debounce. A PUT firing before the PATCH's response had
-// landed would ship a stale custom_query and silently clobber what had just been typed.
-// Everything now goes through a single debounced PATCH carrying the whole UI state, so
-// there is no second writer to race with.
-const buildPayload = () => ({
-  units: {
-    temperature_unit: settings.value.tempUnit,
-    time_format: settings.value.timeFormat,
-    date_format: settings.value.dateFormat,
-    wind_speed_unit: settings.value.windUnit
-  },
-  display: {
-    show_clock: settings.value.showClock,
-    show_date: settings.value.showDate,
-    show_weekday: settings.value.showWeekday,
-    show_temperature: settings.value.showTemperature,
-    show_humidity_wind: settings.value.showHumidityWind,
-    show_precipitation_cloudiness: settings.value.showPrecipitation,
-    show_sunrise_sunset: settings.value.showSunriseSunset,
-    show_location: settings.value.showLocation,
-    show_debug: settings.value.showDebug,
-    clock_font: settings.value.clockFont,
-    // Numbers, not words. "thin"/"regular"/"medium" mapped onto weights that half these
-    // families do not publish; the backend now stores a real weight (100-900).
-    clock_font_weight: Number(settings.value.clockFontWeight),
-    clock_font_size: Number(settings.value.clockFontSize),
-    weekday_font: settings.value.weekdayFont,
-    weekday_font_weight: Number(settings.value.weekdayFontWeight),
-    weekday_font_size: Number(settings.value.weekdayFontSize),
-    date_font: settings.value.dateFont,
-    date_font_weight: Number(settings.value.dateFontWeight),
-    date_font_size: Number(settings.value.dateFontSize)
-  },
-  photos: {
-    refresh_interval: Number(settings.value.photoInterval),
-    // A number, matching the u8 the backend declares. This used to be sent as a number
-    // and stored as a String, which is the only reason the backend needed a bespoke
-    // string-or-number deserializer.
-    photo_quality: Number(settings.value.photoQuality),
-    enable_festive_queries: settings.value.festivePhotos,
-    custom_query: customQuery.value
-  }
-})
-
+// A successful save means the screen has already redrawn with it: the server wakes the
+// screen before it answers.
 const saveSettings = async () => {
-  if (clockFontSizeError.value || weekdayFontSizeError.value || dateFontSizeError.value) {
-    return
-  }
-
   try {
-    const response = await authedFetch('/api/settings', {
-      method: 'PATCH',
-      body: JSON.stringify(buildPayload())
-    })
-    await response.json()
-    showMessage('✅ Settings saved successfully!', 'success')
+    await authedFetch('/api/settings', { method: 'PATCH', body: JSON.stringify(settings.value) })
+    notify('Saved · the screen is updated')
   } catch (error) {
     if (error.message === 'unauthorized') return
     console.error('Error saving settings:', error)
-    showMessage('❌ Failed to save settings', 'error')
+    notify("Couldn't save. Is the screen on?", 'error')
   }
 }
 
-// Reset to defaults
-const resetSettings = async () => {
-  if (!confirm('Reset all settings to defaults? This cannot be undone.')) {
-    return
-  }
+// Every change saves itself; there is no Save button to forget.
+watch(settings, () => {
+  if (applyingServerState || !settings.value) return
+  clearTimeout(saveTimer)
+  saveTimer = setTimeout(saveSettings, 300)
+}, { deep: true })
 
+const resetSettings = async () => {
+  if (!(await confirmWith('Put every setting back to its default?', 'Reset'))) return
   try {
     await authedFetch('/api/settings/reset', { method: 'POST' })
     await loadSettings()
-    showMessage('🔄️ Settings reset to defaults', 'success')
+    notify('Settings reset · the screen is updated')
   } catch (error) {
-    if (error.message === 'unauthorized') return
-    console.error('Error resetting settings:', error)
-    showMessage('❌ Failed to reset settings', 'error')
+    if (error.message !== 'unauthorized') notify("Couldn't reset. Is the screen on?", 'error')
   }
 }
 
-// There is deliberately no Unsplash key field here. Photos come from a proxy that holds
-// the key server-side, so a user never needs one - and the app never holds a secret that
-// could be extracted from their machine.
+// ===== The user's own photos =====
 
-// Ask the screen for a new photo right now. The dashboard has always listened for this
-// event; until now nothing could emit it.
-const refreshPhoto = async () => {
-  isRefreshingPhoto.value = true
+const loadLibrary = async () => {
+  if (needsToken.value || !token.value) return
   try {
-    await authedFetch('/api/photo/refresh', { method: 'POST' })
-    showMessage('🔄️ New photo requested', 'success')
+    const ids = await (await authedFetch('/api/photos')).json()
+    // Keep thumbnails already fetched; fetch only new ones, free the removed ones.
+    const known = new Map(library.value.map(item => [item.id, item.thumb]))
+    const items = await Promise.all(ids.map(async id => {
+      if (known.has(id)) return { id, thumb: known.get(id) }
+      const blob = await (await authedFetch(`/api/photos/${id}/thumb`)).blob()
+      return { id, thumb: URL.createObjectURL(blob) }
+    }))
+    known.forEach((thumb, id) => { if (!ids.includes(id)) URL.revokeObjectURL(thumb) })
+    library.value = items
   } catch (error) {
-    if (error.message !== 'unauthorized') {
-      console.error('Error requesting a photo refresh:', error)
-      showMessage('❌ Failed to request a new photo', 'error')
-    }
-  } finally {
-    isRefreshingPhoto.value = false
+    if (error.message !== 'unauthorized') console.error('Error loading your photos:', error)
   }
 }
 
-// Pair with the screen: check the typed token before storing it, so a typo is caught
-// here rather than on the next edit.
+// One request per file, so a big batch shows progress and one bad file does not sink
+// the rest.
+const addPhotos = async (event) => {
+  const files = [...event.target.files]
+  event.target.value = ''
+  let added = 0
+
+  for (const [index, file] of files.entries()) {
+    uploading.value = `Adding ${index + 1} of ${files.length}…`
+    try {
+      await authedFetch('/api/photos', {
+        method: 'POST',
+        body: file,
+        headers: { 'Content-Type': file.type || 'application/octet-stream' }
+      })
+      added++
+    } catch (error) {
+      if (error.message === 'unauthorized') break
+      notify(`${file.name}: ${error.message}`, 'error')
+    }
+  }
+
+  uploading.value = ''
+  await loadLibrary()
+  if (added) notify(added === 1 ? 'Photo added' : `${added} photos added`)
+}
+
+const removePhoto = async (item) => {
+  if (!(await confirmWith('Remove this photo from the screen?', 'Remove', item.thumb))) return
+  const id = item.id
+  try {
+    await authedFetch(`/api/photos/${id}`, { method: 'DELETE' })
+    await loadLibrary()
+    notify('Photo removed')
+  } catch (error) {
+    if (error.message !== 'unauthorized') notify("Couldn't remove it. Is the screen on?", 'error')
+  }
+}
+
+const nextPhoto = async () => {
+  try {
+    await authedFetch('/api/photos/next', { method: 'POST' })
+    notify('Showing the next photo')
+  } catch (error) {
+    if (error.message !== 'unauthorized') notify(error.message, 'error')
+  }
+}
+
+watch(() => settings.value?.photos.source, (source) => {
+  if (source === 'local') loadLibrary()
+})
+
+const checkToken = async (candidate) => {
+  const response = await fetch('/api/auth/check', { headers: { 'X-Idleview-Token': candidate } })
+  return response.ok
+}
+
+// Check the typed token before storing it, so a typo is caught here and not on the
+// next change.
 const submitToken = async () => {
   const candidate = tokenInput.value.trim().toUpperCase()
   if (!candidate) return
 
   try {
-    const response = await fetch(`${API_BASE}/api/auth/check`, {
-      headers: { 'X-Idleview-Token': candidate }
-    })
-    if (!response.ok) {
+    if (!(await checkToken(candidate))) {
       tokenError.value = 'That token was rejected. Check the one shown on the Idleview screen.'
       return
     }
-
     token.value = candidate
     localStorage.setItem(TOKEN_KEY, candidate)
     tokenInput.value = ''
     tokenError.value = ''
     needsToken.value = false
-
-    // Only now are the settings fetched and rendered.
     await loadSettings()
-    showMessage('✅ Paired with Idleview', 'success')
   } catch (error) {
     console.error('Error verifying token:', error)
     tokenError.value = 'Could not reach Idleview.'
   }
 }
 
-// Forget the token and drop straight back to the pairing prompt.
 const unpair = () => {
   localStorage.removeItem(TOKEN_KEY)
   token.value = ''
+  settings.value = null
   needsToken.value = true
   tokenError.value = ''
 }
 
-// A single debounced writer covering every editable field, including the custom query.
-watch([settings, customQuery], () => {
-  if (isLoading.value || isApplyingServerState || connectionError.value) return
-  clearTimeout(saveDebounceTimer)
-  saveDebounceTimer = setTimeout(saveSettings, 300)
-}, { deep: true })
-
-// Keep background image out of Vue's VDOM — update imperatively so re-renders never touch it
-watch(backgroundPhoto, (url) => {
-  if (bgImageRef.value) {
-    bgImageRef.value.style.backgroundImage = url ? `url(${url})` : ''
-  }
-})
-
-// SSE connection reference for cleanup
-let sseConnection = null
-
-// Setup Server-Sent Events for real-time updates
-const setupSSE = () => {
-  const eventSource = new EventSource(`${API_BASE}/api/events`)
-  sseConnection = eventSource
-
-  eventSource.onmessage = (event) => {
-    try {
-      const data = JSON.parse(event.data)
-
-      if (data.type === 'photo-updated') {
-        loadBackgroundPhoto()
-      } else if (data.type === 'settings-updated') {
-        // Nothing to refresh while unpaired - the settings are not on screen.
-        if (needsToken.value) return
-        // Skip only the echo of our own write. The previous version muted every
-        // settings event for a second after any save, so a second panel's change
-        // landing in that window was dropped and this panel went quietly stale.
-        if (data.origin && data.origin === clientId) return
-        loadSettings(true)
-      }
-    } catch (error) {
-      console.error('Error parsing SSE event:', error)
-    }
-  }
-
-  eventSource.onopen = () => {
-    console.log('SSE connection established')
-  }
-
-  eventSource.onerror = (error) => {
-    console.error('SSE connection error:', error)
-    eventSource.close()
-    // Retry connection after 5 seconds
-    setTimeout(() => {
-      console.log('Reconnecting to SSE...')
-      setupSSE()
-    }, 5000)
-  }
-
-  return eventSource
-}
-
-// Is this panel paired? Checked before anything is fetched, because an unpaired panel
-// shows no settings at all - not a read-only view of them.
-const verifyStoredToken = async () => {
-  if (!token.value) {
-    needsToken.value = true
-    return false
-  }
-
-  try {
-    const response = await fetch(`${API_BASE}/api/auth/check`, {
-      headers: { 'X-Idleview-Token': token.value }
-    })
-    needsToken.value = !response.ok
-    return response.ok
-  } catch (error) {
-    console.error('Could not reach Idleview:', error)
-    connectionError.value = true
-    return false
-  }
-}
-
-// Pair first, then load. The server would happily serve settings to an unpaired client
-// (reads are open), so this ordering - not the API - is what keeps them off the screen.
+// Pair first, then load: reads are open server-side, so this ordering is what keeps
+// settings off an unpaired phone.
 const start = async () => {
   isLoading.value = true
   connectionError.value = false
+  try {
+    if (token.value && (await checkToken(token.value))) {
+      needsToken.value = false
+      await loadSettings()
+      return
+    }
+    needsToken.value = true
+  } catch (error) {
+    console.error('Could not reach Idleview:', error)
+    connectionError.value = true
+  }
+  isLoading.value = false
+}
 
-  const paired = await verifyStoredToken()
-  if (paired) {
-    await loadSettings()
-  } else {
-    isLoading.value = false
+let events = null
+
+const listen = () => {
+  events = new EventSource('/api/events')
+  events.onmessage = (event) => {
+    try {
+      const data = JSON.parse(event.data)
+      if (data.type === 'photo-updated') {
+        loadPhoto()
+      } else if (data.type === 'photos-updated') {
+        loadLibrary()
+      } else if (data.type === 'settings-updated' && !needsToken.value && data.origin !== clientId) {
+        loadSettings()
+      }
+    } catch (error) {
+      console.error('Bad event from Idleview:', error)
+    }
+  }
+  events.onerror = () => {
+    events.close()
+    setTimeout(listen, 5000)
   }
 }
 
-const retryConnection = () => start()
-
 onMounted(() => {
-  // Open, like the other reads - and needed before the pickers can render a font name
-  // as anything but plain text.
-  loadFontCatalogue()
   start()
-  loadBackgroundPhoto()
-
-  // Setup real-time updates via SSE
-  setupSSE()
+  loadPhoto()
+  listen()
 })
 
-// Cleanup SSE connection on unmount
 onBeforeUnmount(() => {
-  clearTimeout(saveDebounceTimer)
-  if (sseConnection) {
-    console.log('Closing SSE connection')
-    sseConnection.close()
-    sseConnection = null
-  }
+  clearTimeout(saveTimer)
+  clearTimeout(noticeTimer)
+  events?.close()
 })
 </script>
 
 <template>
-  <div class="page-wrapper">
-    <div class="background-image" ref="bgImageRef"></div>
-    <div class="background-overlay"></div>
-    <div class="container">
-      <div class="content">
-        <header>
-          <h1><img :src="SettingsIcon" alt="Settings" class="title-icon" />Idleview Control</h1>
-          <p class="subtitle">Configure your ambient display</p>
-        </header>
+  <div class="background" ref="backgroundRef"></div>
+  <div class="container">
+    <header>
+      <h1>Idleview</h1>
+    </header>
 
-        <div v-if="isLoading" class="loading-state">
-          <p>Loading...</p>
-        </div>
+    <div v-if="isLoading" class="card state">Connecting…</div>
 
-        <div v-else-if="connectionError" class="error-state">
-          <p>⚠️ Cannot connect to Idleview app</p>
-          <p class="error-details">Make sure the Idleview application is running on this computer.</p>
-          <button class="btn btn-primary" @click="retryConnection">
-            Retry Connection
-          </button>
-        </div>
-
-        <!-- Until this panel is paired it shows nothing but the token prompt. The
-             settings below are not rendered, and never fetched. -->
-        <section v-else-if="needsToken" class="settings-group pairing-panel">
-          <h2 class="pairing-heading">Pair with your screen</h2>
-          <p class="pairing-copy">
-            Enter the control token to manage this display. Press <strong>T</strong> on the
-            Idleview screen to show it.
-          </p>
-          <form class="pairing-form" @submit.prevent="submitToken">
-            <input
-              v-model="tokenInput"
-              type="text"
-              class="number-input pairing-input"
-              placeholder="e.g. K7PMX2QD"
-              autocomplete="off"
-              spellcheck="false"
-              aria-label="Control token"
-            />
-            <button type="submit" class="btn btn-primary" :disabled="!tokenInput.trim()">
-              Pair
-            </button>
-          </form>
-          <p v-if="tokenError" class="setting-error">{{ tokenError }}</p>
-        </section>
-
-        <main v-else>
-          <!-- Units Section -->
-          <section class="settings-group">
-            <h2 @click="toggleSection('units')" @keydown="handleHeaderKeydown($event, 'units')" tabindex="0"
-              class="collapsible-header">
-              <span class="header-left"><img :src="RulerIcon" alt="Units" class="section-icon" />Units</span>
-              <svg class="chevron" :class="{ expanded: expandedSections.units }" width="20" height="20"
-                viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
-                <path d="M5 7.5L10 12.5L15 7.5" stroke="currentColor" stroke-width="2" stroke-linecap="round"
-                  stroke-linejoin="round" />
-              </svg>
-            </h2>
-            <div v-show="expandedSections.units" class="section-content">
-              <SelectInput label="Temperature Unit" v-model="settings.tempUnit" :options="tempOptions" />
-              <SelectInput label="Time Format" v-model="settings.timeFormat" :options="timeOptions" />
-              <SelectInput label="Date Format" v-model="settings.dateFormat" :options="dateOptions" />
-              <SelectInput label="Wind Speed Unit" v-model="settings.windUnit" :options="windOptions" />
-            </div>
-          </section>
-
-          <!-- Display Section -->
-          <section class="settings-group">
-            <h2 @click="toggleSection('display')" @keydown="handleHeaderKeydown($event, 'display')" tabindex="0"
-              class="collapsible-header">
-              <span class="header-left"><img :src="MonitorIcon" alt="Display" class="section-icon" />Display</span>
-              <svg class="chevron" :class="{ expanded: expandedSections.display }" width="20" height="20"
-                viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
-                <path d="M5 7.5L10 12.5L15 7.5" stroke="currentColor" stroke-width="2" stroke-linecap="round"
-                  stroke-linejoin="round" />
-              </svg>
-            </h2>
-            <div v-show="expandedSections.display" class="section-content">
-              <ToggleSwitch label="Show Clock" v-model="settings.showClock" />
-              <ToggleSwitch label="Show Date" v-model="settings.showDate" />
-              <ToggleSwitch label="Show Weekday" v-model="settings.showWeekday" />
-              <ToggleSwitch label="Show Temperature" v-model="settings.showTemperature" />
-              <ToggleSwitch label="Show Humidity and Wind" v-model="settings.showHumidityWind" />
-              <ToggleSwitch label="Show Precipitation and Cloudiness" v-model="settings.showPrecipitation" />
-              <ToggleSwitch label="Show Sunrise and Sunset timers" v-model="settings.showSunriseSunset" />
-              <ToggleSwitch label="Show Location" v-model="settings.showLocation" />
-            </div>
-          </section>
-
-          <!-- Fonts Section -->
-          <section class="settings-group">
-            <h2 @click="toggleSection('fonts')" @keydown="handleHeaderKeydown($event, 'fonts')" tabindex="0"
-              class="collapsible-header">
-              <span class="header-left"><img :src="TypeIcon" alt="Fonts" class="section-icon" />Fonts</span>
-              <svg class="chevron" :class="{ expanded: expandedSections.fonts }" width="20" height="20"
-                viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
-                <path d="M5 7.5L10 12.5L15 7.5" stroke="currentColor" stroke-width="2" stroke-linecap="round"
-                  stroke-linejoin="round" />
-              </svg>
-            </h2>
-            <div v-show="expandedSections.fonts" class="section-content">
-
-              <!-- Editing a screen in another room is otherwise guess-and-check. -->
-              <ScreenPreview
-                v-if="fontCatalogue?.fonts"
-                :display="settings"
-                :fonts="fontCatalogue.fonts"
-                :background-photo="backgroundPhoto"
-              />
-
-              <!-- Clock subsection -->
-              <div class="subsection">
-                <h3 @click="toggleSection('clockFonts')" @keydown="handleHeaderKeydown($event, 'clockFonts')" tabindex="0"
-                  class="subsection-header collapsible-header">
-                  <span class="header-left">Clock</span>
-                  <svg class="chevron" :class="{ expanded: expandedSections.clockFonts }" width="20" height="20"
-                    viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
-                    <path d="M5 7.5L10 12.5L15 7.5" stroke="currentColor" stroke-width="2" stroke-linecap="round"
-                      stroke-linejoin="round" />
-                  </svg>
-                </h3>
-                <div v-show="expandedSections.clockFonts" class="subsection-content section-content">
-                  <FontPicker label="Clock Font" v-model="settings.clockFont" :fonts="clockFonts" preview-text="12:45" />
-                  <SelectInput label="Font Weight" v-model="settings.clockFontWeight" :options="clockWeightOptions" />
-                  <div class="setting-item number-setting">
-                    <label for="clock-font-size">Clock Font Size</label>
-                    <div class="number-input-wrapper">
-                      <input id="clock-font-size" v-model.number="settings.clockFontSize" type="number"
-                        :min="CLOCK_FONT_SIZE_MIN" :max="CLOCK_FONT_SIZE_MAX"
-                        step="1" class="number-input" :class="{ invalid: clockFontSizeError }" />
-                      <p v-if="clockFontSizeError" class="setting-error">{{ clockFontSizeError }}</p>
-                    </div>
-                  </div>
-                </div>
-              </div>
-
-              <!-- Weekday subsection -->
-              <div class="subsection">
-                <h3 @click="toggleSection('weekdayFonts')" @keydown="handleHeaderKeydown($event, 'weekdayFonts')" tabindex="0"
-                  class="subsection-header collapsible-header">
-                  <span class="header-left">Weekday</span>
-                  <svg class="chevron" :class="{ expanded: expandedSections.weekdayFonts }" width="20" height="20"
-                    viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
-                    <path d="M5 7.5L10 12.5L15 7.5" stroke="currentColor" stroke-width="2" stroke-linecap="round"
-                      stroke-linejoin="round" />
-                  </svg>
-                </h3>
-                <div v-show="expandedSections.weekdayFonts" class="subsection-content section-content">
-                  <FontPicker label="Weekday Font" v-model="settings.weekdayFont" :fonts="weekdayFonts" preview-text="Friday" />
-                  <SelectInput label="Font Weight" v-model="settings.weekdayFontWeight" :options="weekdayWeightOptions" />
-                  <div class="setting-item number-setting">
-                    <label for="weekday-font-size">Weekday Font Size</label>
-                    <div class="number-input-wrapper">
-                      <input id="weekday-font-size" v-model.number="settings.weekdayFontSize" type="number"
-                        :min="SECONDARY_FONT_SIZE_MIN" :max="SECONDARY_FONT_SIZE_MAX"
-                        step="1" class="number-input" :class="{ invalid: weekdayFontSizeError }" />
-                      <p v-if="weekdayFontSizeError" class="setting-error">{{ weekdayFontSizeError }}</p>
-                    </div>
-                  </div>
-                </div>
-              </div>
-
-              <!-- Date subsection -->
-              <div class="subsection">
-                <h3 @click="toggleSection('dateFonts')" @keydown="handleHeaderKeydown($event, 'dateFonts')" tabindex="0"
-                  class="subsection-header collapsible-header">
-                  <span class="header-left">Date</span>
-                  <svg class="chevron" :class="{ expanded: expandedSections.dateFonts }" width="20" height="20"
-                    viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
-                    <path d="M5 7.5L10 12.5L15 7.5" stroke="currentColor" stroke-width="2" stroke-linecap="round"
-                      stroke-linejoin="round" />
-                  </svg>
-                </h3>
-                <div v-show="expandedSections.dateFonts" class="subsection-content section-content">
-                  <FontPicker label="Date Font" v-model="settings.dateFont" :fonts="dateFonts" preview-text="14 Jul" />
-                  <SelectInput label="Font Weight" v-model="settings.dateFontWeight" :options="dateWeightOptions" />
-                  <div class="setting-item number-setting">
-                    <label for="date-font-size">Date Font Size</label>
-                    <div class="number-input-wrapper">
-                      <input id="date-font-size" v-model.number="settings.dateFontSize" type="number"
-                        :min="SECONDARY_FONT_SIZE_MIN" :max="SECONDARY_FONT_SIZE_MAX"
-                        step="1" class="number-input" :class="{ invalid: dateFontSizeError }" />
-                      <p v-if="dateFontSizeError" class="setting-error">{{ dateFontSizeError }}</p>
-                    </div>
-                  </div>
-                </div>
-              </div>
-
-            </div>
-          </section>
-
-          <!-- Photo Settings -->
-          <section class="settings-group">
-            <h2 @click="toggleSection('photos')" class="collapsible-header">
-              <span class="header-left"><img :src="ImageIcon" alt="Photos" class="section-icon" />Photos</span>
-              <svg class="chevron" :class="{ expanded: expandedSections.photos }" width="20" height="20"
-                viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
-                <path d="M5 7.5L10 12.5L15 7.5" stroke="currentColor" stroke-width="2" stroke-linecap="round"
-                  stroke-linejoin="round" />
-              </svg>
-            </h2>
-            <div v-show="expandedSections.photos" class="section-content">
-              <div class="setting-item">
-                <label for="custom-query">Custom Search Query</label>
-                <div class="number-input-wrapper">
-                  <input id="custom-query" v-model="customQuery" type="text" class="number-input"
-                    placeholder="e.g. misty forest" />
-                </div>
-              </div>
-              <ToggleSwitch
-                label="Enable Festive Photos (Christmas, New Year, Easter, etc.)"
-                v-model="settings.festivePhotos"
-                :disabled="!!customQuery.trim()"
-                disabled-message="Festive photos are unavailable while a custom search query is active."
-                @disabled-click="showMessage('⚠️ Festive photos cannot be toggled while a custom search query is active.', 'warning')"
-              />
-              <SelectInput label="Photo Refresh Interval" v-model="settings.photoInterval" :options="intervalOptions" />
-              <SelectInput label="Photo Quality" v-model="settings.photoQuality" :options="qualityOptions" />
-
-              <div class="dev-actions">
-                <button class="btn btn-primary" @click="refreshPhoto" :disabled="isRefreshingPhoto">
-                  <img :src="RefreshIcon" alt="" class="btn-icon" />
-                  {{ isRefreshingPhoto ? 'Requesting…' : 'New Photo Now' }}
-                </button>
-              </div>
-            </div>
-          </section>
-
-          <!-- Dev Section -->
-          <section class="settings-group">
-            <h2 @click="toggleSection('dev')" @keydown="handleHeaderKeydown($event, 'dev')" tabindex="0"
-              class="collapsible-header">
-              <span class="header-left"><img :src="BracesIcon" alt="Dev" class="section-icon" />Developer</span>
-              <svg class="chevron" :class="{ expanded: expandedSections.dev }" width="20" height="20"
-                viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
-                <path d="M5 7.5L10 12.5L15 7.5" stroke="currentColor" stroke-width="2" stroke-linecap="round"
-                  stroke-linejoin="round" />
-              </svg>
-            </h2>
-            <div v-show="expandedSections.dev" class="section-content">
-              <ToggleSwitch label="Show Debug Panel" v-model="settings.showDebug" />
-              
-              <div class="dev-actions">
-                <button class="btn btn-danger" @click="resetSettings">
-                  <img :src="ResetIcon" alt="Reset" class="btn-icon" />Reset to Defaults
-                </button>
-              </div>
-            </div>
-          </section>
-
-          <!-- Unpairing is a connection action, not a developer tool, so it sits on its
-               own rather than hidden inside the collapsed Developer section. -->
-          <div class="account-actions">
-            <button class="btn" @click="unpair">
-              Unpair This Device
-            </button>
-          </div>
-
-          <div class="messages-container">
-            <div v-for="msg in messages" :key="msg.id" :class="['status-message', msg.type]">
-              {{ msg.text }}
-            </div>
-          </div>
-        </main>
-
-        <footer>
-          <div v-if="photoCredits" class="photo-credits">
-            <h3>Current Photo</h3>
-            <p>Photo by <a :href="photoCredits.authorUrl" target="_blank" rel="noopener">{{ photoCredits.author }}</a>
-              on Unsplash</p>
-          </div>
-          <div v-else class="photo-credits">
-            <p class="no-photo">No photo loaded yet</p>
-          </div>
-        </footer>
-      </div>
+    <div v-else-if="connectionError" class="card state">
+      <p class="error">Can't reach the Idleview screen.</p>
+      <p>Make sure it is switched on and on the same Wi-Fi as this device.</p>
+      <button class="btn btn-primary" @click="start">Try again</button>
     </div>
+
+    <section v-else-if="needsToken" class="card pairing-panel">
+      <h2>Pair with your screen</h2>
+      <p>
+        Type the token shown in the corner of the Idleview screen. It appears for 30
+        seconds after the screen starts, or press <strong>T</strong> on its keyboard.
+      </p>
+      <form class="pairing-form" @submit.prevent="submitToken">
+        <input
+          v-model="tokenInput"
+          class="pairing-input"
+          placeholder="e.g. K7PMX2QD"
+          autocomplete="off"
+          autocapitalize="characters"
+          spellcheck="false"
+          aria-label="Control token"
+        />
+        <button type="submit" class="btn btn-primary" :disabled="!tokenInput.trim()">Pair</button>
+      </form>
+      <p v-if="tokenError" class="error">{{ tokenError }}</p>
+    </section>
+
+    <main v-else-if="settings">
+      <details class="card" :open="isOpen('units')" @toggle="rememberSection('units', $event)">
+        <summary><h2>Units</h2></summary>
+        <ChoiceInput label="Temperature" v-model="settings.units.temperature_unit" :options="temperatureOptions" />
+        <ChoiceInput label="Clock" v-model="settings.units.time_format" :options="timeOptions" />
+        <ChoiceInput label="Date" v-model="settings.units.date_format" :options="dateOptions" />
+        <ChoiceInput label="Wind" v-model="settings.units.wind_speed_unit" :options="windOptions" />
+      </details>
+
+      <details class="card" :open="isOpen('display')" @toggle="rememberSection('display', $event)">
+        <summary><h2>Show on screen</h2></summary>
+        <ToggleSwitch
+          v-for="toggle in showToggles"
+          :key="toggle.key"
+          :label="toggle.label"
+          v-model="settings.display[toggle.key]"
+        />
+      </details>
+
+      <details class="card" :open="isOpen('photos')" @toggle="rememberSection('photos', $event)">
+        <summary><h2>Photos</h2></summary>
+        <ChoiceInput label="Photos from" v-model="settings.photos.source" :options="sourceOptions" />
+
+        <div v-if="settings.photos.source === 'local'" class="library">
+          <p v-if="!library.length" class="hint">
+            No photos yet. Until you add some the screen stays dark &mdash; Unsplash is not
+            used in this mode.
+          </p>
+          <div v-else class="grid">
+            <figure v-for="item in library" :key="item.id">
+              <img :src="item.thumb" alt="" />
+              <button type="button" class="remove" aria-label="Remove this photo" @click="removePhoto(item)">×</button>
+            </figure>
+          </div>
+          <div class="library-actions">
+            <button v-if="library.length > 1" type="button" class="btn next" @click="nextPhoto">
+              Next photo
+            </button>
+            <label class="btn btn-primary add" :class="{ busy: uploading }">
+              {{ uploading || 'Add photos' }}
+              <input type="file" accept="image/jpeg,image/png,image/webp" multiple hidden
+                :disabled="!!uploading" @change="addPhotos" />
+            </label>
+          </div>
+        </div>
+
+        <ChoiceInput label="New photo every" v-model="settings.photos.refresh_interval" :options="intervalOptions" />
+        <ToggleSwitch
+          v-if="settings.photos.source !== 'local'"
+          label="Holiday photos (Christmas, New Year, Halloween)"
+          v-model="settings.photos.enable_festive_queries"
+        />
+      </details>
+
+      <footer>
+        <p v-if="photo?.author" class="credit">
+          Photo by <a :href="photo.author_url" target="_blank" rel="noopener">{{ photo.author }}</a> on Unsplash
+        </p>
+        <div class="footer-actions">
+          <button class="btn" @click="resetSettings">Reset to defaults</button>
+          <button class="btn" @click="unpair">Unpair this device</button>
+        </div>
+      </footer>
+    </main>
   </div>
+  <div class="notice" :class="notice?.kind" role="status" aria-live="polite" v-show="notice">
+    {{ notice?.text }}
+  </div>
+  <dialog ref="dialogRef" class="confirm" @close="answer(false)" @click.self="answer(false)">
+    <img v-if="dialog.image" :src="dialog.image" alt="" class="confirm-image" />
+    <p>{{ dialog.text }}</p>
+    <div class="confirm-actions">
+      <button type="button" class="btn" @click="answer(false)">Cancel</button>
+      <button type="button" class="btn btn-danger" @click="answer(true)">{{ dialog.action }}</button>
+    </div>
+  </dialog>
 </template>
 
 <style scoped>
-.page-wrapper {
-  position: relative;
-  min-height: 100vh;
-}
-
-.background-image {
+.background {
   position: fixed;
-  top: -10%;
-  left: -10%;
-  right: -10%;
-  bottom: -10%;
-  background-size: cover;
-  background-position: center;
-  filter: blur(10px);
-  z-index: -2;
-  will-change: transform;
-}
-
-.background-overlay {
-  position: fixed;
-  top: 0;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  background: rgba(0, 0, 0, 0.3);
+  inset: -10%;
+  background: #2c3e50 center / cover;
+  filter: blur(12px) brightness(0.75);
   z-index: -1;
 }
 
-.container {
-  position: relative;
-  min-height: 100vh;
-}
-
-.content {
-  position: relative;
-  z-index: 1;
-}
-
 header {
-  background: white;
-  border-radius: 12px;
-  padding: 1.5rem;
-  margin-bottom: 1.5rem;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
   text-align: center;
+  color: white;
+  margin-bottom: 1rem;
 }
 
-header h1 {
-  margin-bottom: 0.5rem;
-}
-
-header .subtitle {
+h1 {
+  font-size: 2rem;
   margin: 0;
+  color: white;
+  text-shadow: 0 2px 6px rgba(0, 0, 0, 0.4);
 }
 
-.collapsible-header {
-  cursor: pointer;
-  user-select: none;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  transition: color 0.2s;
-}
-
-.collapsible-header .header-left {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-}
-
-.collapsible-header:hover {
-  color: #1976D2;
-}
-
-.chevron {
-  transition: transform 0.3s;
-  flex-shrink: 0;
-}
-
-.chevron.expanded {
-  transform: rotate(180deg);
-}
-
-.section-content {
-  animation: slideDown 0.3s ease-out;
-}
-
-.setting-item {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: 1rem;
-  padding: 1rem 0;
-  border-bottom: 1px solid #e0e0e0;
-}
-
-.setting-item:last-child {
-  border-bottom: none;
-}
-
-.setting-item > label {
+.notice {
+  position: fixed;
+  left: 50%;
+  bottom: max(1rem, env(safe-area-inset-bottom));
+  transform: translateX(-50%);
+  max-width: calc(100vw - 2rem);
+  padding: 0.75rem 1.25rem;
+  border-radius: 999px;
+  background: #1b5e20;
+  color: white;
   font-weight: 500;
-  color: #333;
-  flex: 1;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
+  z-index: 10;
 }
 
-.number-input-wrapper {
-  min-width: 200px;
-  display: flex;
-  flex-direction: column;
-  align-items: flex-end;
+.notice.error {
+  background: #b71c1c;
+  border-radius: 12px;
 }
 
-.number-input {
-  width: 200px;
+.confirm {
+  border: none;
+  border-radius: 16px;
+  padding: 1.25rem;
+  width: min(22rem, calc(100vw - 2rem));
   box-sizing: border-box;
-  padding: 0.5rem 1rem;
-  border: 2px solid #e0e0e0;
-  border-radius: 8px;
-  background-color: white;
-  font-size: 1rem;
-  transition: border-color 0.3s;
-}
-
-.number-input:hover {
-  border-color: #2196F3;
-}
-
-.number-input:focus {
-  outline: none;
-  border-color: #2196F3;
-  box-shadow: 0 0 0 3px rgba(33, 150, 243, 0.1);
-}
-
-.number-input.invalid {
-  border-color: #e74c3c;
-}
-
-.setting-error {
-  margin: 0.35rem 0 0;
-  color: #e74c3c;
-  font-size: 0.85rem;
-}
-
-.setting-placeholder {
-  margin: 0;
-  padding: 0.75rem 0;
-  color: #999;
-  font-size: 0.9rem;
-  font-style: italic;
-}
-
-.subsection {
-  margin: 0.75rem 0;
-  border: 1px solid #e0e0e0;
-  border-radius: 10px;
-  overflow: hidden;
-}
-
-.subsection-header {
-  margin: 0;
-  padding: 0.75rem 1rem;
-  font-size: 1.1rem;
-  font-weight: 600;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.35);
+  text-align: center;
   color: #2c3e50;
-  background: white;
-  border-bottom: 2px solid #3498db;
+}
+
+.confirm::backdrop {
+  background: rgba(10, 20, 30, 0.55);
+  backdrop-filter: blur(3px);
+}
+
+.confirm[open] {
+  animation: pop 0.15s ease-out;
+}
+
+@keyframes pop {
+  from { opacity: 0; transform: scale(0.96); }
+  to { opacity: 1; transform: scale(1); }
+}
+
+.confirm-image {
+  width: 100%;
+  max-height: 12rem;
+  object-fit: cover;
+  border-radius: 10px;
+}
+
+.confirm p {
+  font-size: 1.05rem;
+  font-weight: 500;
+  margin: 0.75rem 0 1.25rem;
+}
+
+.confirm-actions {
+  display: flex;
+  gap: 0.75rem;
+}
+
+.confirm-actions .btn {
+  flex: 1;
+  min-width: 0;
+  min-height: 44px;
+}
+
+.confirm-actions .btn:not(.btn-danger) {
+  background: #eceff1;
+  color: #333;
+}
+
+.library {
+  padding: 0.5rem 0 0.75rem;
+  border-bottom: 1px solid #eee;
+}
+
+.hint {
+  color: #555;
+  margin: 0.25rem 0 0.75rem;
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(88px, 1fr));
+  gap: 0.5rem;
+  margin-bottom: 0.75rem;
+}
+
+.grid figure {
+  position: relative;
+  margin: 0;
+  aspect-ratio: 1;
+}
+
+.grid img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  border-radius: 8px;
+}
+
+.remove {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  width: 32px;
+  height: 32px;
+  border: none;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.6);
+  color: white;
+  font-size: 1.2rem;
+  line-height: 1;
   cursor: pointer;
-  user-select: none;
+}
+
+.library-actions {
+  display: flex;
+  gap: 0.75rem;
+}
+
+.library-actions .btn {
+  box-sizing: border-box;
+  min-width: 0;
+}
+
+.next {
+  background: #eceff1;
+  color: #333;
+}
+
+.add.busy {
+  opacity: 0.7;
+  pointer-events: none;
+}
+
+.card {
+  background: white;
+  border-radius: 14px;
+  padding: 1rem 1.25rem;
+  margin-bottom: 1rem;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.15);
+}
+
+/* Native open/close: works with keyboard and screen readers, no script needed. */
+summary {
+  cursor: pointer;
+  list-style: none;
   display: flex;
   align-items: center;
   justify-content: space-between;
-  transition: color 0.2s;
+  padding: 0.25rem 0;
 }
 
-.subsection-header:hover {
-  color: #1976D2;
+summary::-webkit-details-marker {
+  display: none;
 }
 
-.subsection-header .header-left {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
+summary::after {
+  content: '';
+  width: 0.55rem;
+  height: 0.55rem;
+  border-right: 2px solid #90a4ae;
+  border-bottom: 2px solid #90a4ae;
+  transform: rotate(45deg);
+  transition: transform 0.2s;
+  margin-right: 0.25rem;
 }
 
-.subsection-content {
-  padding: 0 1rem;
+details[open] > summary::after {
+  transform: rotate(-135deg);
 }
 
-.subsection-content .setting-item:last-child {
-  border-bottom: none;
+summary:focus-visible {
+  outline: 2px solid #2196f3;
+  outline-offset: 4px;
+  border-radius: 4px;
 }
 
-
-
-@keyframes slideDown {
-  from {
-    opacity: 0;
-    max-height: 0;
-  }
-
-  to {
-    opacity: 1;
-    max-height: 1000px;
-  }
+summary h2 {
+  display: inline;
 }
 
-.pairing-panel {
-  border: 2px solid #f0a500;
+.card h2 {
+  font-size: 1.1rem;
+  margin: 0.25rem 0 0.25rem;
+  color: #2c3e50;
 }
 
-.pairing-heading {
-  margin: 0 0 0.5rem;
+.state {
+  text-align: center;
+  padding: 2rem 1.25rem;
 }
 
-.pairing-copy {
-  margin: 0 0 1rem;
-  color: #555;
-  font-size: 0.9rem;
+.error {
+  color: #c62828;
 }
 
 .pairing-form {
   display: flex;
   gap: 0.75rem;
-  align-items: center;
   flex-wrap: wrap;
 }
 
 .pairing-input {
   flex: 1;
-  min-width: 12rem;
+  min-width: 10rem;
+  padding: 0.75rem 1rem;
+  font-size: 1.2rem;
   font-family: monospace;
-  letter-spacing: 0.12em;
+  letter-spacing: 0.15em;
   text-transform: uppercase;
+  border: 2px solid #ddd;
+  border-radius: 10px;
 }
 
-.dev-actions {
-  margin: 1.5rem 0;
+.pairing-input:focus {
+  outline: none;
+  border-color: #2196f3;
+}
+
+.pairing-form .btn {
+  flex: 0 0 auto;
+  min-width: 6rem;
+}
+
+.btn:disabled {
+  opacity: 0.6;
+  cursor: default;
+  transform: none;
+}
+
+footer {
+  border: none;
+  margin-top: 1.5rem;
+  padding-top: 0;
+  color: white;
+}
+
+.credit {
+  text-shadow: 0 1px 4px rgba(0, 0, 0, 0.5);
+}
+
+.credit a {
+  color: white;
+}
+
+.footer-actions {
   display: flex;
-  justify-content: center;
   gap: 0.75rem;
   flex-wrap: wrap;
 }
 
-.dev-actions .btn {
-  min-width: 200px;
-}
-
-.account-actions {
-  margin: 1.5rem 0;
-  display: flex;
-  justify-content: center;
-}
-
-.account-actions .btn {
-  min-width: 200px;
-}
-
-.photo-credits {
-  margin-top: 2rem;
-  padding-top: 1.5rem;
-  text-align: center;
-  background: white;
-  border-radius: 12px;
-  padding: 1.5rem;
-  margin-bottom: 1.5rem;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
-}
-
-.photo-credits h3 {
-  font-size: 1rem;
-  font-weight: 600;
-  color: #2c3e50;
-  margin: 0 0 0.5rem 0;
-}
-
-.photo-credits p {
-  margin: 0;
-  color: #7f8c8d;
-  font-size: 0.9rem;
-}
-
-.photo-credits a {
-  color: #1976D2;
-  text-decoration: none;
-  font-weight: 500;
-}
-
-.photo-credits a:hover {
-  text-decoration: underline;
-}
-
-.photo-credits .no-photo {
-  font-style: italic;
-  color: #bdc3c7;
+.footer-actions .btn {
+  background: rgba(255, 255, 255, 0.9);
+  color: #333;
+  min-width: 10rem;
 }
 </style>
