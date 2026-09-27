@@ -32,7 +32,6 @@ const connectionError = ref(false)
 const status = ref('') // '', 'saving', 'saved', 'error'
 const photo = ref(null)
 const backgroundRef = ref(null)
-const isRefreshingPhoto = ref(false)
 
 let applyingServerState = false
 let saveTimer = null
@@ -167,18 +166,6 @@ const resetSettings = async () => {
     flashStatus('saved')
   } catch (error) {
     if (error.message !== 'unauthorized') flashStatus('error')
-  }
-}
-
-const refreshPhoto = async () => {
-  isRefreshingPhoto.value = true
-  try {
-    await authedFetch('/api/photo/refresh', { method: 'POST' })
-  } catch (error) {
-    if (error.message !== 'unauthorized') flashStatus('error')
-  } finally {
-    // The new photo arrives over SSE once the screen has it.
-    setTimeout(() => { isRefreshingPhoto.value = false }, 1500)
   }
 }
 
@@ -336,9 +323,6 @@ onBeforeUnmount(() => {
         <h2>Photos</h2>
         <ChoiceInput label="New photo every" v-model="settings.photos.refresh_interval" :options="intervalOptions" />
         <ToggleSwitch label="Holiday photos (Christmas, New Year, Halloween)" v-model="settings.photos.enable_festive_queries" />
-        <button class="btn btn-primary wide" @click="refreshPhoto" :disabled="isRefreshingPhoto">
-          {{ isRefreshingPhoto ? 'Asking the screen…' : 'New photo now' }}
-        </button>
       </section>
 
       <footer>
@@ -436,11 +420,6 @@ h1 {
 .pairing-form .btn {
   flex: 0 0 auto;
   min-width: 6rem;
-}
-
-.wide {
-  width: 100%;
-  margin: 0.75rem 0 0.25rem;
 }
 
 .btn:disabled {
