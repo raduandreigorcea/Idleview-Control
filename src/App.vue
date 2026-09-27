@@ -301,29 +301,29 @@ onBeforeUnmount(() => {
     </section>
 
     <main v-else-if="settings">
-      <section class="card">
-        <h2>Units</h2>
+      <details class="card" open>
+        <summary><h2>Units</h2></summary>
         <ChoiceInput label="Temperature" v-model="settings.units.temperature_unit" :options="temperatureOptions" />
         <ChoiceInput label="Clock" v-model="settings.units.time_format" :options="timeOptions" />
         <ChoiceInput label="Date" v-model="settings.units.date_format" :options="dateOptions" />
         <ChoiceInput label="Wind" v-model="settings.units.wind_speed_unit" :options="windOptions" />
-      </section>
+      </details>
 
-      <section class="card">
-        <h2>Show on screen</h2>
+      <details class="card" open>
+        <summary><h2>Show on screen</h2></summary>
         <ToggleSwitch
           v-for="toggle in showToggles"
           :key="toggle.key"
           :label="toggle.label"
           v-model="settings.display[toggle.key]"
         />
-      </section>
+      </details>
 
-      <section class="card">
-        <h2>Photos</h2>
+      <details class="card" open>
+        <summary><h2>Photos</h2></summary>
         <ChoiceInput label="New photo every" v-model="settings.photos.refresh_interval" :options="intervalOptions" />
         <ToggleSwitch label="Holiday photos (Christmas, New Year, Halloween)" v-model="settings.photos.enable_festive_queries" />
-      </section>
+      </details>
 
       <footer>
         <p v-if="photo" class="credit">
@@ -377,6 +377,45 @@ h1 {
   padding: 1rem 1.25rem;
   margin-bottom: 1rem;
   box-shadow: 0 2px 10px rgba(0, 0, 0, 0.15);
+}
+
+/* Native open/close: works with keyboard and screen readers, no script needed. */
+summary {
+  cursor: pointer;
+  list-style: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.25rem 0;
+}
+
+summary::-webkit-details-marker {
+  display: none;
+}
+
+summary::after {
+  content: '';
+  width: 0.55rem;
+  height: 0.55rem;
+  border-right: 2px solid #90a4ae;
+  border-bottom: 2px solid #90a4ae;
+  transform: rotate(45deg);
+  transition: transform 0.2s;
+  margin-right: 0.25rem;
+}
+
+details[open] > summary::after {
+  transform: rotate(-135deg);
+}
+
+summary:focus-visible {
+  outline: 2px solid #2196f3;
+  outline-offset: 4px;
+  border-radius: 4px;
+}
+
+summary h2 {
+  display: inline;
 }
 
 .card h2 {

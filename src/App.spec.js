@@ -216,3 +216,18 @@ describe('choices', () => {
     expect(body.units.time_format).toBe('12h')
   })
 })
+
+describe('sections', () => {
+  it('open and close natively, and start open', async () => {
+    const { wrapper } = await mountPaired()
+
+    const sections = wrapper.findAll('main details')
+    expect(sections.map(s => s.find('summary').text())).toEqual(['Units', 'Show on screen', 'Photos'])
+    expect(sections.every(s => s.element.open)).toBe(true)
+  })
+
+  it('has no way to ask the screen for a photo on demand', async () => {
+    const { wrapper } = await mountPaired()
+    expect(wrapper.text()).not.toMatch(/new photo now/i)
+  })
+})
