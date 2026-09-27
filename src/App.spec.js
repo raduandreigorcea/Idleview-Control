@@ -226,6 +226,20 @@ describe('sections', () => {
     expect(sections.every(s => s.element.open)).toBe(true)
   })
 
+  it('remembers which sections were closed', async () => {
+    const { wrapper } = await mountPaired()
+    const units = wrapper.find('main details')
+    units.element.open = false
+    await units.trigger('toggle')
+    expect(JSON.parse(localStorage.getItem('expandedSections')).units).toBe(false)
+    wrapper.unmount()
+
+    // Next visit: Units stays closed, the others open.
+    const { wrapper: again } = await mountPaired()
+    const sections = again.findAll('main details').map(d => d.element.open)
+    expect(sections).toEqual([false, true, true])
+  })
+
   it('has no way to ask the screen for a photo on demand', async () => {
     const { wrapper } = await mountPaired()
     expect(wrapper.text()).not.toMatch(/new photo now/i)

@@ -40,6 +40,26 @@ const backgroundRef = ref(null)
 const library = ref([])
 const uploading = ref('')
 
+// Which sections are open, remembered per browser. Same key the panel used before, so
+// a saved preference carries over. Missing sections start open.
+const SECTIONS_KEY = 'expandedSections'
+const openSections = ref((() => {
+  try {
+    return JSON.parse(localStorage.getItem(SECTIONS_KEY)) || {}
+  } catch {
+    return {}
+  }
+})())
+const isOpen = (key) => openSections.value[key] !== false
+const rememberSection = (key, event) => {
+  openSections.value = { ...openSections.value, [key]: event.target.open }
+  try {
+    localStorage.setItem(SECTIONS_KEY, JSON.stringify(openSections.value))
+  } catch {
+    // Private mode or storage blocked: the section still opens and closes.
+  }
+}
+
 // The confirmation dialog. A native <dialog> rather than confirm(), which cannot be
 // styled: showModal() still gives focus trapping, Escape to cancel and a backdrop.
 const dialogRef = ref(null)
@@ -422,7 +442,7 @@ onBeforeUnmount(() => {
     </section>
 
     <main v-else-if="settings">
-      <details class="card" open>
+      <details class="card" :open="isOpen('units')" @toggle="rememberSection('units', $event)">
         <summary><h2>Units</h2></summary>
         <ChoiceInput label="Temperature" v-model="settings.units.temperature_unit" :options="temperatureOptions" />
         <ChoiceInput label="Clock" v-model="settings.units.time_format" :options="timeOptions" />
@@ -430,7 +450,7 @@ onBeforeUnmount(() => {
         <ChoiceInput label="Wind" v-model="settings.units.wind_speed_unit" :options="windOptions" />
       </details>
 
-      <details class="card" open>
+      <details class="card" :open="isOpen('display')" @toggle="rememberSection('display', $event)">
         <summary><h2>Show on screen</h2></summary>
         <ToggleSwitch
           v-for="toggle in showToggles"
@@ -440,7 +460,7 @@ onBeforeUnmount(() => {
         />
       </details>
 
-      <details class="card" open>
+      <details class="card" :open="isOpen('photos')" @toggle="rememberSection('photos', $event)">
         <summary><h2>Photos</h2></summary>
         <ChoiceInput label="Photos from" v-model="settings.photos.source" :options="sourceOptions" />
 
