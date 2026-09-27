@@ -231,3 +231,79 @@ describe('sections', () => {
     expect(wrapper.text()).not.toMatch(/new photo now/i)
   })
 })
+
+describe('save confirmation', () => {
+  it('says the screen is updated once a change is saved', async () => {
+    const { wrapper } = await mountPaired()
+
+    vi.useFakeTimers()
+    wrapper.vm.settings.display.show_clock = false
+    await flushPromises()
+    vi.advanceTimersByTime(400)
+    vi.useRealTimers()
+    await flushPromises()
+
+    const notice = wrapper.find('.notice')
+    expect(notice.attributes('role')).toBe('status')
+    expect(notice.text()).toContain('Saved')
+    expect(notice.text()).toContain('screen is updated')
+  })
+})
+
+describe('my photos', () => {
+  const mountLocal = async (ids) => {
+    localStorage.setItem('idleviewControlToken', VALID_TOKEN)
+    globalThis.URL.createObjectURL = vi.fn(() => 'blob:thumb')
+    globalThis.URL.revokeObjectURL = vi.fn()
+    const calls = []
+    globalThis.fetch = vi.fn(async (url, options = {}) => {
+      calls.push({ url, options })
+      if (url.includes('/api/auth/check')) return { ok: true, status: 200, json: async () => ({ ok: true }) }
+      if (url.includes('/api/settings') && !options.method) {
+        const settings = settingsPayload()
+        settings.photos.source = 'local'
+        return { ok: true, status: 200, json: async () => settings }
+      }
+      if (url.endsWith('/thumb')) return { ok: true, status: 200, blob: async () => new Blob(['x']) }
+      if (url === '/api/photos' && !options.method) return { ok: true, status: 200, json: async () => ids }
+      if (url === '/api/photos' && options.method === 'POST') return { ok: true, status: 200, json: async () => ({ id: 'ffffffffffffffff' }) }
+      return { ok: true, status: 200, json: async () => null }
+    })
+    const wrapper = mount(App)
+    await flushPromises()
+    return { wrapper, calls }
+  }
+
+  it('says the screen stays dark rather than using Unsplash when there are none', async () => {
+    const { wrapper } = await mountLocal([])
+    expect(wrapper.text()).toContain('Unsplash is not')
+    expect(wrapper.find('input[type="file"]').exists()).toBe(true)
+    // Holiday photos are an Unsplash search; they do not apply here.
+    expect(wrapper.text()).not.toContain('Holiday photos')
+  })
+
+  it('shows each photo, fetching thumbnails with the token', async () => {
+    const { wrapper, calls } = await mountLocal(['0123456789abcdef', 'fedcba9876543210'])
+    expect(wrapper.findAll('.grid img')).toHaveLength(2)
+
+    const thumb = calls.find(call => call.url.endsWith('/thumb'))
+    expect(thumb.options.headers['X-Idleview-Token']).toBe(VALID_TOKEN)
+  })
+
+  it('uploads each chosen file as-is, with the token', async () => {
+    const { wrapper, calls } = await mountLocal([])
+    const file = new File(['jpeg bytes'], 'beach.jpg', { type: 'image/jpeg' })
+
+    const input = wrapper.find('input[type="file"]')
+    Object.defineProperty(input.element, 'files', { value: [file] })
+    await input.trigger('change')
+    await flushPromises()
+
+    const upload = calls.find(call => call.options.method === 'POST')
+    expect(upload.url).toBe('/api/photos')
+    expect(upload.options.body).toBe(file)
+    expect(upload.options.headers['Content-Type']).toBe('image/jpeg')
+    expect(upload.options.headers['X-Idleview-Token']).toBe(VALID_TOKEN)
+    expect(wrapper.find('.notice').text()).toContain('Photo added')
+  })
+})
