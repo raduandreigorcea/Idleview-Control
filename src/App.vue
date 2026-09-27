@@ -351,10 +351,27 @@ const unpair = () => {
 
 // Pair first, then load: reads are open server-side, so this ordering is what keeps
 // settings off an unpaired phone.
+// Opened by scanning the screen's QR code: the token is in the fragment (#token=...),
+// which browsers never send to the server. Take it, then wipe it from the address bar
+// and the history entry so it is not left lying around.
+const tokenFromLink = (() => {
+  const fromLink = new URLSearchParams(location.hash.slice(1)).get('token')
+  if (fromLink) history.replaceState(null, '', location.pathname + location.search)
+  return fromLink?.trim().toUpperCase() || ''
+})()
+
 const start = async () => {
   isLoading.value = true
   connectionError.value = false
   try {
+    if (tokenFromLink && tokenFromLink !== token.value) {
+      if (await checkToken(tokenFromLink)) {
+        token.value = tokenFromLink
+        localStorage.setItem(TOKEN_KEY, tokenFromLink)
+      } else {
+        tokenError.value = 'That QR code is out of date. Scan the one on the screen now.'
+      }
+    }
     if (token.value && (await checkToken(token.value))) {
       needsToken.value = false
       await loadSettings()

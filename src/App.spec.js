@@ -162,6 +162,38 @@ describe('pairing gate', () => {
   })
 })
 
+describe('pairing by QR code', () => {
+  it('pairs from the #token in the link, then removes it from the address bar', async () => {
+    history.replaceState(null, '', `/#token=${VALID_TOKEN.toLowerCase()}`)
+    installFetchStub()
+
+    // The token is read when the component module sets up, so mount afresh.
+    vi.resetModules()
+    const { default: FreshApp } = await import('./App.vue')
+    const wrapper = mount(FreshApp)
+    await flushPromises()
+
+    expect(wrapper.find('main').exists()).toBe(true)
+    expect(localStorage.getItem('idleviewControlToken')).toBe(VALID_TOKEN)
+    expect(location.hash).toBe('')
+  })
+
+  it('falls back to the prompt when the QR code is out of date', async () => {
+    history.replaceState(null, '', '/#token=OLDTOKEN')
+    installFetchStub()
+
+    vi.resetModules()
+    const { default: FreshApp } = await import('./App.vue')
+    const wrapper = mount(FreshApp)
+    await flushPromises()
+
+    expect(wrapper.find('.pairing-form').exists()).toBe(true)
+    expect(wrapper.text()).toContain('out of date')
+    expect(localStorage.getItem('idleviewControlToken')).toBeNull()
+    expect(location.hash).toBe('')
+  })
+})
+
 describe('writes carry the token', () => {
   it('sends the token and a client id on save', async () => {
     localStorage.setItem('idleviewControlToken', VALID_TOKEN)
